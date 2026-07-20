@@ -50,13 +50,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._download_btn = Gtk.Button(
             child=Adw.ButtonContent(icon_name="go-down-symbolic", label="Download"))
         self._download_btn.set_tooltip_text("Download the selected file")
+        self._newfolder_btn = Gtk.Button(icon_name="folder-new-symbolic")
+        self._newfolder_btn.set_tooltip_text("New folder")
         self._back_btn.connect("clicked", self._on_back)
         self._fwd_btn.connect("clicked", self._on_forward)
         self._refresh_btn.connect("clicked", self._on_refresh)
         self._upload_btn.connect("clicked", self._on_upload_clicked)
         self._download_btn.connect("clicked", self._on_download_clicked)
+        self._newfolder_btn.connect("clicked", lambda _b: self._prompt_new_folder())
         self._header.pack_start(self._back_btn)
         self._header.pack_start(self._fwd_btn)
+        self._header.pack_start(self._newfolder_btn)
         self._header.pack_end(self._refresh_btn)
         self._header.pack_end(self._upload_btn)
         self._header.pack_end(self._download_btn)
@@ -113,6 +117,17 @@ class MainWindow(Adw.ApplicationWindow):
     def _activity_text(kind: str, name: str) -> str:
         verb = "Uploading" if kind == "upload" else "Downloading"
         return f"{verb} {name}…"
+
+    @staticmethod
+    def _valid_new_name(name: str, existing_names) -> str | None:
+        name = name.strip()
+        if not name:
+            return "Name cannot be empty."
+        if "/" in name:
+            return "Name cannot contain '/'."
+        if name in existing_names:
+            return "An item with that name already exists."
+        return None
 
     # ---- transfer activity indicator (throbber + phase in the status bar) ----
     def _begin_activity(self, text: str) -> None:
@@ -266,6 +281,33 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_refresh(self, _btn) -> None:
         self._reload(self._nav.refresh)
+
+    def _current_names(self):
+        return [self._store.get_item(i).name for i in range(self._store.get_n_items())]
+
+    def _prompt_new_folder(self) -> None:
+        dialog = Adw.MessageDialog(transient_for=self, heading="New folder",
+                                   body="Enter a name for the new folder.")
+        entry = Gtk.Entry(activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_default_response("create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(dlg, response):
+            if response != "create":
+                return
+            name = entry.get_text().strip()
+            err = self._valid_new_name(name, self._current_names())
+            if err:
+                self._toast(err)
+                return
+            path = f"{self._nav.current.rstrip('/')}/{name}"
+            run_async(lambda: self._disk.mkdir(path),
+                      lambda _r: self._reload(self._nav.refresh), self._on_error)
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _on_error(self, exc, gen=None) -> None:
         if gen is not None and gen != self._load_gen:
