@@ -47,3 +47,17 @@ class ProtonDisk:
     def download(self, remote: str, local_folder: str) -> TransferResult:
         data = self._runner.run("filesystem", "download", remote, local_folder)
         return TransferResult.from_json(data)
+
+    # --- organize ---
+    def mkdir(self, path: str) -> None:
+        parent, _, name = path.rstrip("/").rpartition("/")
+        self._runner.run("filesystem", "create-folder", parent or "/", name)
+
+    def rename(self, path: str, new_name: str) -> None:
+        self._runner.run("filesystem", "rename", path, new_name)
+
+    def move(self, src: str, target_parent: str) -> None:
+        self._runner.run("filesystem", "move", src, target_parent)
+
+    def trash(self, path: str) -> None:
+        self._runner.run("filesystem", "trash", path)
