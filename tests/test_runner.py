@@ -68,6 +68,7 @@ def test_run_nonzero_maps_stderr_login_message(monkeypatch):
     ("You need to login first", AuthError),
     ("File already exists", ConflictError),
     ("Rate limit exceeded", RateLimitError),
+    ("Too many requests, slow down", RateLimitError),
     ("Something weird happened", ProtonDiskError),
 ])
 def test_map_error_classification(text, exc):

@@ -17,7 +17,7 @@ def _unwrap(result) -> str | None:
 
 def _parse_iso(s) -> float | None:
     """Parse an ISO-8601 timestamp (trailing Z allowed) to epoch seconds."""
-    if not s:
+    if not isinstance(s, str) or not s:
         return None
     return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
 

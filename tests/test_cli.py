@@ -46,3 +46,13 @@ def test_error_returns_1_and_prints_stderr(capsys):
     disk = FakeDisk(error=AuthError("not logged in"))
     assert main(["auth-status"], disk=disk) == 1
     assert "not logged in" in capsys.readouterr().err
+
+
+def test_missing_binary_prints_error_not_traceback(capsys, monkeypatch):
+    from protondisk.core.errors import CLINotFoundError
+    def boom():
+        raise CLINotFoundError("Could not find the 'proton-drive' binary on PATH.")
+    monkeypatch.setattr("protondisk.cli.ProtonDisk", boom)
+    rc = main(["auth-status"])  # no injected disk -> constructs ProtonDisk() -> raises
+    assert rc == 1
+    assert "proton-drive" in capsys.readouterr().err

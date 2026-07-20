@@ -26,8 +26,8 @@ def main(argv: list[str] | None = None, disk: ProtonDisk | None = None) -> int:
         print(protondisk.__version__)
         return 0
 
-    disk = disk or ProtonDisk()
     try:
+        disk = disk or ProtonDisk()
         if args.command == "auth-status":
             status = disk.auth_status()
             print(f"logged in as {status.account}" if status.logged_in else "not logged in")

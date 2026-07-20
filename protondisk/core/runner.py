@@ -34,7 +34,7 @@ def map_error(returncode: int, stdout: str, stderr: str) -> ProtonDiskError:
         return AuthError(message)
     if "conflict" in lowered or "already exists" in lowered:
         return ConflictError(message)
-    if "rate" in lowered or "throttl" in lowered or "429" in lowered:
+    if "rate" in lowered or "throttl" in lowered or "429" in lowered or "too many" in lowered:
         return RateLimitError(message)
     return ProtonDiskError(message)
 

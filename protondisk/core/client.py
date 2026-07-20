@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .runner import CLIRunner
-from .errors import AuthError, NotFoundError
+from .errors import AuthError
 from .models import AuthStatus, Entry, TransferResult, ShareInfo
 
 
