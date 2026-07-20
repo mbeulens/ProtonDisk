@@ -41,6 +41,17 @@ def test_download_phases_from_real_lines():
         "2026 INFO [download] revision X: Download succeeded") == "Finishing…"
 
 
+def test_per_block_lines_do_not_flap_to_finishing():
+    # Block-level completion lines must NOT read as the terminal "Finishing…"
+    # (otherwise the label flaps back and forth during a multi-block transfer).
+    assert parse_progress_line("2026 INFO [upload] revision X: block 1:JWT: Uploaded") is None
+    assert parse_progress_line("2026 DEBUG [download] revision X: Flushing completed blocks") is None
+    assert parse_progress_line("2026 INFO [download] revision X: block 1: Downloaded") is None
+    # but the true end still finishes:
+    assert parse_progress_line("2026 INFO [upload] revision X: Upload succeeded") == "Finishing…"
+    assert parse_progress_line("2026 INFO [download] revision X: Download succeeded") == "Finishing…"
+
+
 def test_noise_lines_return_none():
     # metric / api / cli / crypto components are not transfer phases
     assert parse_progress_line(

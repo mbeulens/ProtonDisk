@@ -32,12 +32,15 @@ def parse_progress_line(raw: str) -> str | None:
     component = match.group(1)
     msg = line[match.end():].lower()
 
+    # Only the terminal "succeeded"/"committing"/"cleanup" lines map to "Finishing…";
+    # per-block lines ("block N: Uploaded", "Flushing completed blocks") deliberately
+    # produce no phase change so the label doesn't flap back and forth mid-transfer.
     if component == "upload":
         if "encrypting" in msg:
             return "Encrypting…"
         if "starting upload" in msg or "generating file crypto" in msg:
             return "Starting…"
-        if "committing" in msg or "succeeded" in msg or "cleanup" in msg or "uploaded" in msg:
+        if "committing" in msg or "upload succeeded" in msg or "upload cleanup" in msg:
             return "Finishing…"
         if "uploading" in msg or "upload started" in msg or "requesting upload tokens" in msg:
             return "Uploading…"
@@ -50,7 +53,7 @@ def parse_progress_line(raw: str) -> str | None:
         return "Verifying…"
     if "starting download" in msg:
         return "Starting…"
-    if "succeeded" in msg or "cleanup" in msg or "flushing" in msg or "downloaded" in msg:
+    if "download succeeded" in msg or "download cleanup" in msg:
         return "Finishing…"
     if "downloading" in msg or "download started" in msg:
         return "Downloading…"

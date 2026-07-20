@@ -4,6 +4,7 @@ from __future__ import annotations
 from .runner import CLIRunner
 from .errors import AuthError
 from .models import AuthStatus, Entry, TransferResult, ShareInfo
+from .progress import parse_progress_line
 
 
 class ProtonDisk:
@@ -39,13 +40,31 @@ class ProtonDisk:
         return Entry.from_json(data, path=path)
 
     # --- transfer ---
-    def upload(self, local: str, parent: str, *, conflict: str = "skip") -> TransferResult:
-        data = self._runner.run(
-            "filesystem", "upload", "--conflict-strategy", conflict, local, parent)
+    @staticmethod
+    def _emit_progress(raw_line: str, progress) -> None:
+        phase = parse_progress_line(raw_line)
+        if phase is not None:
+            progress(phase)
+
+    def upload(self, local: str, parent: str, *, conflict: str = "skip",
+               progress=None) -> TransferResult:
+        if progress is None:
+            data = self._runner.run(
+                "filesystem", "upload", "--conflict-strategy", conflict, local, parent)
+        else:
+            data = self._runner.run_streaming(
+                "filesystem", "upload", "--verbose",
+                "--conflict-strategy", conflict, local, parent,
+                on_line=lambda raw: self._emit_progress(raw, progress))
         return TransferResult.from_json(data)
 
-    def download(self, remote: str, local_folder: str) -> TransferResult:
-        data = self._runner.run("filesystem", "download", remote, local_folder)
+    def download(self, remote: str, local_folder: str, *, progress=None) -> TransferResult:
+        if progress is None:
+            data = self._runner.run("filesystem", "download", remote, local_folder)
+        else:
+            data = self._runner.run_streaming(
+                "filesystem", "download", "--verbose", remote, local_folder,
+                on_line=lambda raw: self._emit_progress(raw, progress))
         return TransferResult.from_json(data)
 
     # --- organize ---
