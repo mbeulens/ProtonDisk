@@ -417,16 +417,27 @@ class MainWindow(Adw.ApplicationWindow):
         self._paste_btn.set_sensitive(can)
 
     def _on_paste(self, _btn) -> None:
-        if not self._can_paste_into(self._cut or "", self._nav.current):
+        # Capture BOTH src and target now, at click time. Reading self._nav.current
+        # inside the worker lambda would move the item to wherever the user has
+        # navigated by the time the move runs — the wrong destination.
+        target = self._nav.current
+        if not self._can_paste_into(self._cut or "", target):
             return
         src = self._cut
-        run_async(lambda: self._disk.move(src, self._nav.current),
-                  lambda _r: self._after_paste(), self._on_error)
+        run_async(lambda: self._disk.move(src, target),
+                  lambda _r: self._after_paste(), self._on_paste_error)
 
     def _after_paste(self) -> None:
         self._cut = None
         self._paste_btn.set_visible(False)
         self._reload(self._nav.refresh)
+        return False
+
+    def _on_paste_error(self, exc) -> None:
+        # a failed paste clears the cut (e.g. the source was removed elsewhere)
+        self._cut = None
+        self._paste_btn.set_visible(False)
+        self._on_error(exc)
         return False
 
     @staticmethod
