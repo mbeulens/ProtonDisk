@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw, Gio, GObject  # noqa: E402
 
 from .navigation import NavigationState
 from .worker import run_async
+from .format import human_size
 from protondisk.core.errors import ProtonDiskError
 
 
@@ -16,12 +17,14 @@ class _Row(GObject.Object):
     name = GObject.Property(type=str, default="")
     is_dir = GObject.Property(type=bool, default=False)
     path = GObject.Property(type=str, default="")
+    size = GObject.Property(type=int, default=-1)
 
-    def __init__(self, name: str, is_dir: bool, path: str) -> None:
+    def __init__(self, name: str, is_dir: bool, path: str, size: int = -1) -> None:
         super().__init__()
         self.name = name
         self.is_dir = is_dir
         self.path = path
+        self.size = size
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -29,6 +32,7 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=application)
         self._disk = disk
         self._nav = NavigationState(disk)
+        self._account = None
         self.set_title("ProtonDisk")
         self.set_default_size(900, 600)
 
@@ -64,6 +68,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._build_loading_view(), "loading")
         self._toasts = Adw.ToastOverlay(child=self._stack)
         self._toolbar.set_content(self._toasts)
+
+        self._status = Gtk.Label(xalign=0, margin_start=8, margin_end=8,
+                                 margin_top=4, margin_bottom=4)
+        self._status.add_css_class("dim-label")
+        self._toolbar.add_bottom_bar(self._status)
+
         self.set_content(self._toolbar)
 
         self._stack.set_visible_child_name("loading")
@@ -82,6 +92,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _nav_button_states(self) -> tuple[bool, bool]:
         return (self._nav.can_go_back(), self._nav.can_go_forward())
+
+    def _status_text(self, n_items: int, account) -> str:
+        noun = "item" if n_items == 1 else "items"
+        base = f"{n_items} {noun}"
+        return f"{base} · {account}" if account else base
 
     # ---- view construction ----
     def _build_loading_view(self) -> Gtk.Widget:
@@ -113,22 +128,27 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_row_setup(self, _factory, list_item) -> None:
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.append(Gtk.Image())
-        box.append(Gtk.Label(xalign=0))
+        name = Gtk.Label(xalign=0, hexpand=True)
+        box.append(name)
+        box.append(Gtk.Label(xalign=1))  # size
         list_item.set_child(box)
 
     def _on_row_bind(self, _factory, list_item) -> None:
         row = list_item.get_item()
         box = list_item.get_child()
         image = box.get_first_child()
-        label = image.get_next_sibling()
+        name = image.get_next_sibling()
+        size = name.get_next_sibling()
         image.set_from_icon_name(self._icon_name(row.is_dir))
-        label.set_label(row.name)
+        name.set_label(row.name)
+        size.set_label("" if row.is_dir or row.size < 0 else human_size(row.size))
 
     # ---- behaviour ----
     def _check_auth(self) -> None:
         run_async(self._disk.auth_status, self._on_auth_result, self._on_error)
 
     def _on_auth_result(self, status) -> None:
+        self._account = status.account
         if status.logged_in:
             self._title.set_subtitle(status.account or "")
             self._load_current()
@@ -146,13 +166,15 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_entries_loaded(self, entries) -> None:
         self._store.remove_all()
-        for name, is_dir in self._rows_from_entries(entries):
-            path = f"{self._nav.current.rstrip('/')}/{name}"
-            self._store.append(_Row(name, is_dir, path))
+        for entry in entries:
+            path = f"{self._nav.current.rstrip('/')}/{entry.name}"
+            size = entry.size if entry.size is not None else -1
+            self._store.append(_Row(entry.name, entry.is_dir, path, size))
         self._title.set_title(self._nav.current)
-        self._stack.set_visible_child_name("browser")
         self._rebuild_breadcrumbs()
         self._update_nav_sensitivity()
+        self._status.set_label(self._status_text(len(self._store), self._account))
+        self._stack.set_visible_child_name("browser")
         return False
 
     def _on_row_activated(self, _list, position) -> None:
