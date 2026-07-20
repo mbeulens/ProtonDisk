@@ -36,7 +36,21 @@ class MainWindow(Adw.ApplicationWindow):
         self._header = Adw.HeaderBar()
         self._title = Adw.WindowTitle(title="ProtonDisk", subtitle="")
         self._header.set_title_widget(self._title)
+        self._back_btn = Gtk.Button(icon_name="go-previous-symbolic", sensitive=False)
+        self._fwd_btn = Gtk.Button(icon_name="go-next-symbolic", sensitive=False)
+        self._refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        self._back_btn.connect("clicked", self._on_back)
+        self._fwd_btn.connect("clicked", self._on_forward)
+        self._refresh_btn.connect("clicked", self._on_refresh)
+        self._header.pack_start(self._back_btn)
+        self._header.pack_start(self._fwd_btn)
+        self._header.pack_end(self._refresh_btn)
         self._toolbar.add_top_bar(self._header)
+
+        self._breadcrumb_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
+                                       margin_start=8, margin_end=8,
+                                       margin_top=4, margin_bottom=4)
+        self._toolbar.add_top_bar(self._breadcrumb_bar)
 
         self._stack = Gtk.Stack()
         self._stack.add_named(self._build_signed_out_view(), "signed_out")
@@ -55,6 +69,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _rows_from_entries(self, entries) -> list[tuple[str, bool]]:
         return [(e.name, e.is_dir) for e in entries]
+
+    def _breadcrumb_labels(self) -> list[str]:
+        return [label for label, _path in self._nav.breadcrumbs()]
+
+    def _nav_button_states(self) -> tuple[bool, bool]:
+        return (self._nav.can_go_back(), self._nav.can_go_forward())
 
     # ---- view construction ----
     def _build_loading_view(self) -> Gtk.Widget:
@@ -124,6 +144,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._store.append(_Row(name, is_dir, path))
         self._title.set_title(self._nav.current)
         self._stack.set_visible_child_name("browser")
+        self._rebuild_breadcrumbs()
+        self._update_nav_sensitivity()
         return False
 
     def _on_row_activated(self, _list, position) -> None:
@@ -131,6 +153,43 @@ class MainWindow(Adw.ApplicationWindow):
         if row is not None and row.is_dir:
             self._nav.navigate_to(row.path)
             self._load_current()
+
+    def _rebuild_breadcrumbs(self) -> None:
+        child = self._breadcrumb_bar.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._breadcrumb_bar.remove(child)
+            child = nxt
+        crumbs = self._nav.breadcrumbs()
+        for index, (label, path) in enumerate(crumbs):
+            if index:
+                self._breadcrumb_bar.append(Gtk.Label(label="/"))
+            btn = Gtk.Button(label=label)
+            btn.add_css_class("flat")
+            btn.connect("clicked", self._on_crumb_clicked, path)
+            self._breadcrumb_bar.append(btn)
+
+    def _on_crumb_clicked(self, _btn, path) -> None:
+        if path != self._nav.current:
+            self._nav.navigate_to(path)
+            self._load_current()
+
+    def _update_nav_sensitivity(self) -> None:
+        back, forward = self._nav_button_states()
+        self._back_btn.set_sensitive(back)
+        self._fwd_btn.set_sensitive(forward)
+
+    def _on_back(self, _btn) -> None:
+        self._nav.go_back()
+        self._load_current()
+
+    def _on_forward(self, _btn) -> None:
+        self._nav.go_forward()
+        self._load_current()
+
+    def _on_refresh(self, _btn) -> None:
+        self._stack.set_visible_child_name("loading")
+        run_async(self._nav.refresh, self._on_entries_loaded, self._on_error)
 
     def _on_error(self, exc) -> None:
         message = str(exc) if isinstance(exc, ProtonDiskError) else f"Unexpected error: {exc}"
