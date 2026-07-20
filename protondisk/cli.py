@@ -16,6 +16,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("auth-status", help="show login status")
     ls = sub.add_parser("ls", help="list a Drive folder")
     ls.add_argument("path")
+    sub.add_parser("gui", help="launch the graphical browser")
     return parser
 
 
@@ -25,6 +26,10 @@ def main(argv: list[str] | None = None, disk: ProtonDisk | None = None) -> int:
     if args.command == "version":
         print(protondisk.__version__)
         return 0
+
+    if args.command == "gui":
+        from protondisk.gui.app import run as run_gui
+        return run_gui()
 
     try:
         disk = disk or ProtonDisk()
