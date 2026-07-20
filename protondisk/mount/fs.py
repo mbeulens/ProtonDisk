@@ -53,6 +53,41 @@ class ProtonDiskFS(Operations):
         return {"f_bsize": 4096, "f_frsize": 4096, "f_blocks": 0, "f_bfree": 0,
                 "f_bavail": 0, "f_files": 0, "f_ffree": 0, "f_namemax": 255}
 
+    # ---- download-on-open ----
+    def open(self, path, flags):
+        if is_write_flags(flags):
+            raise FuseOSError(errno.EROFS)
+        entry = self._find_entry(path)
+        if entry is None:
+            raise FuseOSError(errno.ENOENT)
+        if entry.is_dir:
+            raise FuseOSError(errno.EISDIR)
+        tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
+        try:
+            self._disk.download(proton_path(path), tmpdir)
+        except ProtonDiskError:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise FuseOSError(errno.EIO)
+        local = os.path.join(tmpdir, os.path.basename(path))
+        fobj = open(local, "rb")
+        fh = self._next_fh
+        self._next_fh += 1
+        self._open_files[fh] = (tmpdir, fobj)
+        return fh
+
+    def read(self, path, size, offset, fh):
+        _tmpdir, fobj = self._open_files[fh]
+        fobj.seek(offset)
+        return fobj.read(size)
+
+    def release(self, path, fh):
+        entry = self._open_files.pop(fh, None)
+        if entry is not None:
+            tmpdir, fobj = entry
+            fobj.close()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return 0
+
     # ---- read-only enforcement ----
     def _readonly(self, *args, **kwargs):
         raise FuseOSError(errno.EROFS)
