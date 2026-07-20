@@ -2,21 +2,31 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `protondisk.core` — a typed Python wrapper around the official `proton-drive` CLI that both the future GUI and FUSE mount will consume.
+**Goal:** Build `protondisk.core` — a typed Python wrapper around the official `proton-drive` CLI (`cli-drive@0.5.0`) that both the future GUI and FUSE mount will consume.
 
-**Architecture:** A thin subprocess layer (`CLIRunner`) is the only code that touches the `proton-drive` binary. It runs commands with `--json`, parses stdout, and maps failures to a single exception hierarchy. A `ProtonDisk` façade exposes typed methods (auth, browse, transfer, organize, share) returning dataclasses. Everything above the runner is pure Python and unit-tested by faking the subprocess/runner boundary — no Proton account needed.
+**Architecture:** A thin subprocess layer (`CLIRunner`) is the only code that touches the `proton-drive` binary. It runs commands with `--json`, parses stdout (JSON array/object, or empty/`undefined` → `{}`), and maps non-zero exits to a single exception hierarchy. A `ProtonDisk` façade exposes typed methods returning dataclasses. Everything above the runner is unit-tested by faking the runner boundary with **real captured JSON shapes** — no Proton account needed in CI.
 
-**Tech Stack:** Python 3.12+, standard library only for the core (`subprocess`, `json`, `shutil`, `dataclasses`, `argparse`), `pytest` for tests.
+**Tech Stack:** Python 3.12+, standard library only for the core (`subprocess`, `json`, `shutil`, `datetime`, `dataclasses`, `argparse`), `pytest` for tests.
+
+> **All JSON in this plan is real output captured from `proton-drive` 0.5.0 on a logged-in session (2026-07-20)**, with long `uid` values shortened for readability. Field names and structures are exact.
 
 ## Global Constraints
 
 - **Python:** 3.12+ (`requires-python = ">=3.12"`). Linux only.
-- **Core has zero third-party dependencies** — stdlib only. (GUI/mount deps come in later milestones.)
-- **Single dependency point:** only `protondisk/core/runner.py` may invoke the `proton-drive` binary. No other module shells out.
+- **Core has zero third-party dependencies** — stdlib only.
+- **Single dependency point:** only `protondisk/core/runner.py` may invoke the `proton-drive` binary.
 - **TDD:** every task writes a failing test first, then the minimal code to pass.
-- **Versioning (project GIT rules):** the `VERSION` file is the single source of truth. **Every commit bumps the patch** and is **pushed to `dev`**. This plan's commits run 0.1.3 → 0.1.12 (the plan document itself was committed at 0.1.2). Skip any version with a `13` segment using commit message `"To be sure to be sure!"` (none occur in this plan). When the milestone completes, a separate **"Bump minor"** step takes it to **0.2.0** (CHANGELOG + README, merge `dev`→`main`).
-- **Assumed CLI shapes:** the exact `proton-drive --json` output schemas and some subcommand spellings (`filesystem mkdir`, `filesystem move`) are **assumed** from the launch article's examples, since the binary is not yet installed here. They are isolated in `models.py` (parsing) and `client.py` (argv), so reconciling with the real binary is a localized change. Argv that IS confirmed by the article: `auth login`, `filesystem list`, `filesystem upload … --conflict-strategy`, `filesystem download`, `sharing status`, `sharing invite --user --role --message`.
-- **Commit author:** `git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl'` and end messages with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
+- **Versioning (project GIT rules):** the `VERSION` file is the single source of truth. Every task commit runs **`scripts/bump-patch.sh`** (created in Task 1), which increments the patch, **skips any patch equal to 13** (jumping 0.1.13 → 0.1.14) and prints a skip notice to stderr. **When the skip notice appears, that commit's message MUST be exactly `To be sure to be sure!`** (see Task 9, which lands on the skip). Every commit is **pushed to `dev`**. Starting from `VERSION=0.1.4` (after this plan is committed), the tasks land on 0.1.5 … 0.1.12, then 0.1.14 (13 skipped) for Task 9, then 0.1.15 for Task 10.
+- **Commit author:** `git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl'`; end messages with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
+- **Confirmed CLI facts** (from live capture):
+  - `list` returns a **top-level JSON array**. `list /` → section stubs `{"path":"/my-files"}`; `list <folder>` → node objects.
+  - Node: `uid`, `parentUid`, `name` = `{"ok":bool,"value":str}`, `type` (`file`|`folder`), `totalStorageSize` (files), `modificationTime`/`creationTime` = **ISO 8601 strings**, `ownedBy.email`, `isShared`, `activeRevision` (files). **No `path` field.**
+  - `filesystem info <path>` → single node object (the `stat`).
+  - `filesystem create-folder <parentPath> <name>`; `filesystem rename <path> <newName>`; `filesystem move <src…> <targetParent>`; `filesystem trash <path…>`. `move`/`trash` → `[{"uid":str,"ok":bool}]`.
+  - `filesystem upload -c <strategy> <local…> <parent>` and `filesystem download <remote…> <localFolder>` → `{"transferredItems","transferredBytes","skippedItems","failedItems","failures"}`. Strategies: `merge|keep-both|replace|skip`.
+  - No `auth status`: probe via `filesystem info /my-files`, read account from `ownedBy.email`.
+  - `sharing status <path>` → literal `undefined` (exit 0) when unshared; may error on undecryptable shares.
+  - Errors: exit 1 with plain-text message on **stderr** (e.g. `You need to login first`).
 
 ---
 
@@ -24,40 +34,33 @@
 
 ```
 protondisk/
-├── __init__.py
+├── __init__.py           # __version__ from VERSION
 ├── core/
-│   ├── __init__.py       # public exports: ProtonDisk, models, errors
+│   ├── __init__.py       # public exports
 │   ├── errors.py         # exception hierarchy
-│   ├── models.py         # Entry, AuthStatus, TransferResult, ShareInfo + from_json
-│   ├── runner.py         # CLIRunner: binary discovery, _run, error mapping
+│   ├── models.py         # Entry, AuthStatus, TransferResult, ShareInfo + helpers
+│   ├── runner.py         # CLIRunner: discovery, run, error mapping
 │   └── client.py         # ProtonDisk façade
-└── cli.py                # thin `protondisk` entrypoint (version, auth-status, ls)
+└── cli.py                # thin `protondisk` entrypoint
+scripts/
+└── bump-patch.sh         # VERSION patch bump (skips 13)
 tests/
-├── test_errors.py
-├── test_models.py
-├── test_runner.py
-├── test_client_auth.py
-├── test_client_browse.py
-├── test_client_transfer.py
-├── test_client_organize.py
-├── test_client_sharing.py
-└── test_cli.py
+├── test_import.py  test_errors.py  test_models.py  test_runner.py
+├── test_client_auth.py  test_client_browse.py  test_client_transfer.py
+├── test_client_organize.py  test_client_sharing.py  test_cli.py
 pyproject.toml
 ```
 
 ---
 
-### Task 1: Project scaffolding, packaging, and test harness
+### Task 1: Scaffolding, packaging, version-bump script, test harness
 
 **Files:**
-- Create: `pyproject.toml`
-- Create: `protondisk/__init__.py`
-- Create: `protondisk/core/__init__.py`
+- Create: `pyproject.toml`, `protondisk/__init__.py`, `protondisk/core/__init__.py`, `scripts/bump-patch.sh`
 - Test: `tests/test_import.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: an importable `protondisk` package; `VERSION` file drives `protondisk.__version__` and packaging version.
+- Produces: importable `protondisk` with `__version__` from `VERSION`; `scripts/bump-patch.sh` prints the new version and skips patch 13.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -115,7 +118,7 @@ from pathlib import Path
 _version_file = Path(__file__).resolve().parent.parent / "VERSION"
 try:
     __version__ = _version_file.read_text(encoding="utf-8").strip()
-except OSError:  # pragma: no cover - fallback when packaged without VERSION
+except OSError:  # pragma: no cover
     __version__ = "0.0.0"
 
 __all__ = ["__version__"]
@@ -126,6 +129,25 @@ __all__ = ["__version__"]
 """ProtonDisk core: typed wrapper around the official proton-drive CLI."""
 ```
 
+`scripts/bump-patch.sh`:
+```bash
+#!/usr/bin/env bash
+# Increment the patch in VERSION. Project rule: skip any patch equal to 13
+# (a commit that lands on 13 jumps to 14 and MUST use the message
+# "To be sure to be sure!"). Prints the new version to stdout.
+set -euo pipefail
+IFS=. read -r MAJOR MINOR PATCH < VERSION
+PATCH=$((PATCH + 1))
+if [ "$PATCH" -eq 13 ]; then
+    PATCH=14
+    echo "NOTE: skipped patch 13 per project rule -> use commit message 'To be sure to be sure!'" >&2
+fi
+printf '%s.%s.%s\n' "$MAJOR" "$MINOR" "$PATCH" > VERSION
+cat VERSION
+```
+
+Make it executable: `chmod +x scripts/bump-patch.sh`
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_import.py -v`
@@ -134,11 +156,13 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.3\n' > VERSION
+chmod +x scripts/bump-patch.sh
+ver=$(scripts/bump-patch.sh)   # 0.1.4 -> 0.1.5
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  add pyproject.toml protondisk/__init__.py protondisk/core/__init__.py tests/test_import.py VERSION
+  add pyproject.toml protondisk/__init__.py protondisk/core/__init__.py \
+      scripts/bump-patch.sh tests/test_import.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): package scaffolding and test harness (v0.1.3)
+  commit -m "feat(core): scaffolding, packaging, version-bump script (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -153,8 +177,7 @@ git push origin dev
 - Test: `tests/test_errors.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `ProtonDiskError` (base) and subclasses `CLINotFoundError`, `AuthError`, `NotFoundError`, `ConflictError`, `RateLimitError`. All accept a message string.
+- Produces: `ProtonDiskError` (base) + `CLINotFoundError`, `AuthError`, `NotFoundError`, `ConflictError`, `RateLimitError`. All accept a message string.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -163,12 +186,8 @@ git push origin dev
 import pytest
 
 from protondisk.core.errors import (
-    ProtonDiskError,
-    CLINotFoundError,
-    AuthError,
-    NotFoundError,
-    ConflictError,
-    RateLimitError,
+    ProtonDiskError, CLINotFoundError, AuthError,
+    NotFoundError, ConflictError, RateLimitError,
 )
 
 
@@ -226,11 +245,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.4\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.6
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/errors.py tests/test_errors.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): exception hierarchy (v0.1.4)
+  commit -m "feat(core): exception hierarchy (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -238,74 +257,118 @@ git push origin dev
 
 ---
 
-### Task 3: Data models and JSON parsing
+### Task 3: Data models and JSON parsing (real shapes)
 
 **Files:**
 - Create: `protondisk/core/models.py`
 - Test: `tests/test_models.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces (frozen dataclasses, each with a `from_json(data: dict)` classmethod):
-  - `Entry(name: str, path: str, is_dir: bool, size: int | None, mtime: float | None, id: str | None)`; `Entry.from_json(data, *, parent="")`. Reads `name`; `is_dir = data.get("type") == "folder"`; `size = data.get("size")`; `mtime = data.get("modifiedAt")`; `path = data.get("path") or f"{parent.rstrip('/')}/{name}"`; `id = data.get("id")`.
-  - `AuthStatus(logged_in: bool, account: str | None)`; `from_json` reads `loggedIn` and `account`.
-  - `TransferResult(source: str, destination: str, bytes: int | None)`; `from_json` reads `source`, `destination`, `bytes`.
-  - `ShareInfo(path: str, shared: bool, members: list[str])`; `from_json` reads `path`, `shared`, `members` (list of dicts each with `email`).
+- Produces module-level helpers and four frozen dataclasses:
+  - `_unwrap(result) -> str | None` — returns `result["value"]` when `result` is a dict with `ok` truthy, else `None`.
+  - `_parse_iso(s) -> float | None` — parses an ISO 8601 string (with trailing `Z`) to epoch seconds; `None` if falsy.
+  - `_basename(path) -> str` — last path segment; `/` for root.
+  - `Entry(name: str, path: str, is_dir: bool, size: int | None, mtime: float | None, uid: str | None)` with `from_json(data, *, path=None, parent="")`. Section stub `{"path": "/x"}` (no `type`) → a directory Entry. Otherwise: name from `_unwrap(data["name"])` (fallback `uid`); if `path` given it overrides both path and name (name=`_basename(path)`); else path = `f"{parent.rstrip('/')}/{name}"`; `is_dir = data.get("type") == "folder"`; `size = data.get("totalStorageSize")`; `mtime = _parse_iso(data.get("modificationTime"))`; `uid = data.get("uid")`.
+  - `AuthStatus(logged_in: bool, account: str | None)`.
+  - `TransferResult(transferred_items: int, transferred_bytes: int, skipped_items: int, failed_items: int, failures: list)` with `from_json`.
+  - `ShareInfo(path: str, shared: bool, members: list[str])` with `from_json(data, *, path="")`; empty/`{}` (unshared) → `shared=False, members=[]`.
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/test_models.py`:
 ```python
-from protondisk.core.models import Entry, AuthStatus, TransferResult, ShareInfo
+from protondisk.core.models import (
+    Entry, AuthStatus, TransferResult, ShareInfo, _unwrap, _parse_iso, _basename,
+)
+
+# Real captured node (uid shortened):
+FILE_NODE = {
+    "uid": "ROOT~FILE",
+    "parentUid": "ROOT~PARENT",
+    "name": {"ok": True, "value": "kaas.txt"},
+    "type": "file",
+    "mediaType": "text/plain; charset=utf-8",
+    "isShared": False,
+    "creationTime": "2026-03-26T00:51:13.000Z",
+    "modificationTime": "2026-03-26T00:51:13.000Z",
+    "totalStorageSize": 95,
+    "ownedBy": {"email": "m.beulens@syntec-one.nl"},
+}
+FOLDER_NODE = {
+    "uid": "ROOT~DIR", "name": {"ok": True, "value": "Test map"},
+    "type": "folder", "isShared": False,
+    "modificationTime": "2026-03-26T02:17:11.000Z", "folder": {"isImported": False},
+}
 
 
-def test_entry_folder_from_json_derives_path_from_parent():
-    e = Entry.from_json({"name": "Reports", "type": "folder"}, parent="/my-files")
-    assert e.name == "Reports"
-    assert e.is_dir is True
-    assert e.path == "/my-files/Reports"
-    assert e.size is None
+def test_unwrap_result_object():
+    assert _unwrap({"ok": True, "value": "kaas.txt"}) == "kaas.txt"
+    assert _unwrap({"ok": False}) is None
+    assert _unwrap(None) is None
 
 
-def test_entry_file_uses_explicit_path_and_fields():
-    e = Entry.from_json(
-        {"name": "q3.pdf", "type": "file", "size": 1024,
-         "modifiedAt": 1720000000.0, "path": "/my-files/q3.pdf", "id": "abc"},
-        parent="/my-files",
-    )
+def test_parse_iso_to_epoch():
+    assert _parse_iso("2026-03-26T00:51:13.000Z") == \
+        __import__("datetime").datetime(2026, 3, 26, 0, 51, 13,
+            tzinfo=__import__("datetime").timezone.utc).timestamp()
+    assert _parse_iso(None) is None
+
+
+def test_basename():
+    assert _basename("/my-files/Reports") == "Reports"
+    assert _basename("/") == "/"
+
+
+def test_entry_section_stub_is_directory():
+    e = Entry.from_json({"path": "/my-files"})
+    assert e.name == "my-files" and e.path == "/my-files" and e.is_dir is True
+
+
+def test_entry_file_from_list_derives_path_from_parent():
+    e = Entry.from_json(FILE_NODE, parent="/my-files")
+    assert e.name == "kaas.txt"
+    assert e.path == "/my-files/kaas.txt"
     assert e.is_dir is False
-    assert e.size == 1024
-    assert e.mtime == 1720000000.0
-    assert e.path == "/my-files/q3.pdf"
-    assert e.id == "abc"
+    assert e.size == 95
+    assert e.uid == "ROOT~FILE"
+    assert e.mtime == _parse_iso("2026-03-26T00:51:13.000Z")
 
 
-def test_auth_status_logged_in():
-    a = AuthStatus.from_json({"loggedIn": True, "account": "user@pm.me"})
-    assert a.logged_in is True
-    assert a.account == "user@pm.me"
+def test_entry_folder_type():
+    e = Entry.from_json(FOLDER_NODE, parent="/my-files")
+    assert e.is_dir is True and e.size is None
 
 
-def test_auth_status_logged_out_defaults():
-    a = AuthStatus.from_json({"loggedIn": False})
-    assert a.logged_in is False
-    assert a.account is None
+def test_entry_info_uses_explicit_path_override():
+    # `filesystem info /my-files` returns name "root"; the path override wins.
+    info = {"uid": "ROOT~PARENT", "name": {"ok": True, "value": "root"},
+            "type": "folder", "ownedBy": {"email": "m.beulens@syntec-one.nl"}}
+    e = Entry.from_json(info, path="/my-files")
+    assert e.name == "my-files" and e.path == "/my-files" and e.is_dir is True
+
+
+def test_entry_undecryptable_name_falls_back_to_uid():
+    node = {"uid": "ROOT~X", "name": {"ok": False}, "type": "file"}
+    e = Entry.from_json(node, parent="/my-files")
+    assert e.name == "ROOT~X"
 
 
 def test_transfer_result_from_json():
     t = TransferResult.from_json(
-        {"source": "./a.txt", "destination": "/my-files/a.txt", "bytes": 12})
-    assert t.source == "./a.txt"
-    assert t.destination == "/my-files/a.txt"
-    assert t.bytes == 12
+        {"transferredItems": 1, "transferredBytes": 17,
+         "skippedItems": 0, "failedItems": 0, "failures": []})
+    assert t.transferred_items == 1 and t.transferred_bytes == 17
+    assert t.skipped_items == 0 and t.failed_items == 0 and t.failures == []
 
 
-def test_share_info_extracts_member_emails():
-    s = ShareInfo.from_json(
-        {"path": "/my-files/Reports", "shared": True,
-         "members": [{"email": "a@pm.me"}, {"email": "b@pm.me"}]})
-    assert s.shared is True
-    assert s.members == ["a@pm.me", "b@pm.me"]
+def test_share_info_unshared_from_empty():
+    s = ShareInfo.from_json({}, path="/my-files/kaas.txt")
+    assert s.shared is False and s.members == [] and s.path == "/my-files/kaas.txt"
+
+
+def test_auth_status_dataclass():
+    a = AuthStatus(logged_in=True, account="user@pm.me")
+    assert a.logged_in is True and a.account == "user@pm.me"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -317,14 +380,35 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'protondisk.core.models
 
 `protondisk/core/models.py`:
 ```python
-"""Typed dataclasses parsed from `proton-drive --json` output.
+"""Typed dataclasses parsed from `proton-drive --json` output (cli-drive 0.5.0).
 
-The exact JSON field names are assumed from the launch article and MUST be
-reconciled against the real binary. Keep all field-name knowledge in this file.
+All field-name knowledge lives here so reconciling with future CLI versions is local.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+
+
+def _unwrap(result) -> str | None:
+    """Return the value of a `{"ok": bool, "value": ...}` Result wrapper."""
+    if isinstance(result, dict) and result.get("ok"):
+        return result.get("value")
+    return None
+
+
+def _parse_iso(s) -> float | None:
+    """Parse an ISO-8601 timestamp (trailing Z allowed) to epoch seconds."""
+    if not s:
+        return None
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
+
+def _basename(path: str) -> str:
+    stripped = path.rstrip("/")
+    if not stripped:
+        return "/"
+    return stripped.rsplit("/", 1)[-1]
 
 
 @dataclass(frozen=True)
@@ -334,19 +418,29 @@ class Entry:
     is_dir: bool
     size: int | None
     mtime: float | None
-    id: str | None
+    uid: str | None
 
     @classmethod
-    def from_json(cls, data: dict, *, parent: str = "") -> "Entry":
-        name = data["name"]
-        path = data.get("path") or f"{parent.rstrip('/')}/{name}"
+    def from_json(cls, data: dict, *, path: str | None = None, parent: str = "") -> "Entry":
+        # Top-level section stub from `list /`: {"path": "/my-files"}
+        if "type" not in data and data.get("path"):
+            p = data["path"]
+            return cls(name=_basename(p), path=p, is_dir=True,
+                       size=None, mtime=None, uid=None)
+        decrypted = _unwrap(data.get("name"))
+        if path is not None:
+            node_path = path
+            name = _basename(path)
+        else:
+            name = decrypted or data.get("uid", "")
+            node_path = f"{parent.rstrip('/')}/{name}" if parent else "/" + name
         return cls(
             name=name,
-            path=path,
+            path=node_path,
             is_dir=data.get("type") == "folder",
-            size=data.get("size"),
-            mtime=data.get("modifiedAt"),
-            id=data.get("id"),
+            size=data.get("totalStorageSize"),
+            mtime=_parse_iso(data.get("modificationTime")),
+            uid=data.get("uid"),
         )
 
 
@@ -355,23 +449,23 @@ class AuthStatus:
     logged_in: bool
     account: str | None
 
-    @classmethod
-    def from_json(cls, data: dict) -> "AuthStatus":
-        return cls(logged_in=bool(data.get("loggedIn")), account=data.get("account"))
-
 
 @dataclass(frozen=True)
 class TransferResult:
-    source: str
-    destination: str
-    bytes: int | None
+    transferred_items: int
+    transferred_bytes: int
+    skipped_items: int
+    failed_items: int
+    failures: list
 
     @classmethod
     def from_json(cls, data: dict) -> "TransferResult":
         return cls(
-            source=data.get("source", ""),
-            destination=data.get("destination", ""),
-            bytes=data.get("bytes"),
+            transferred_items=data.get("transferredItems", 0),
+            transferred_bytes=data.get("transferredBytes", 0),
+            skipped_items=data.get("skippedItems", 0),
+            failed_items=data.get("failedItems", 0),
+            failures=data.get("failures", []),
         )
 
 
@@ -382,13 +476,13 @@ class ShareInfo:
     members: list[str]
 
     @classmethod
-    def from_json(cls, data: dict) -> "ShareInfo":
-        members = [m.get("email", "") for m in data.get("members", [])]
-        return cls(
-            path=data.get("path", ""),
-            shared=bool(data.get("shared")),
-            members=members,
-        )
+    def from_json(cls, data: dict, *, path: str = "") -> "ShareInfo":
+        if not data:
+            return cls(path=path, shared=False, members=[])
+        members = [
+            m.get("email", "") for m in data.get("members", []) if isinstance(m, dict)
+        ]
+        return cls(path=data.get("path", path), shared=True, members=members)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -399,11 +493,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.5\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.7
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/models.py tests/test_models.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): typed data models with JSON parsing (v0.1.5)
+  commit -m "feat(core): typed models with real proton-drive JSON parsing (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -411,18 +505,17 @@ git push origin dev
 
 ---
 
-### Task 4: CLIRunner — binary discovery, execution, error mapping
+### Task 4: CLIRunner — discovery, execution, error mapping
 
 **Files:**
 - Create: `protondisk/core/runner.py`
 - Test: `tests/test_runner.py`
 
 **Interfaces:**
-- Consumes: exceptions from `errors.py`.
 - Produces:
-  - `CLIRunner(binary: str | None = None)`. If `binary` is None, discover via `shutil.which("proton-drive")`; if not found, raise `CLINotFoundError`.
-  - `CLIRunner.run(*args: str, input_text: str | None = None) -> dict | list`. Invokes `[binary, *args, "--json"]` via `subprocess.run(..., capture_output=True, text=True)`. On return code 0, parses stdout as JSON and returns it (or `{}` for empty stdout). On non-zero, calls `map_error(returncode, stdout, stderr)` and raises.
-  - `map_error(returncode: int, stdout: str, stderr: str) -> ProtonDiskError` — module-level function. Extracts a message (prefer a JSON `{"error": {"message": ...}}` in stdout, else stderr, else stdout), lowercases it for matching, and classifies: contains `not found`/`no such`→`NotFoundError`; `unauthorized`/`not logged in`/`login`/`auth`→`AuthError`; `conflict`/`already exists`→`ConflictError`; `rate`/`throttl`/`429`→`RateLimitError`; otherwise `ProtonDiskError`. Returned exception carries the extracted message.
+  - `CLIRunner(binary=None)` — discover via `shutil.which("proton-drive")`; missing → `CLINotFoundError`.
+  - `CLIRunner.run(*args, input_text=None) -> dict | list` — invokes `[binary, *args, "--json"]`. Non-zero exit → `map_error(...)` raised. On success, `stdout.strip()`: empty or `"undefined"` → `{}`; otherwise `json.loads`.
+  - `map_error(returncode, stdout, stderr) -> ProtonDiskError` — message from JSON `{"error":{"message":…}}` in stdout else stderr else stdout; classify by keyword: `not found`/`no such`→`NotFoundError`; `login`/`unauthorized`/`not logged in`/`auth`→`AuthError`; `conflict`/`already exists`→`ConflictError`; `rate`/`throttl`/`429`→`RateLimitError`; else `ProtonDiskError`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -447,61 +540,68 @@ class _Completed:
         self.stderr = stderr
 
 
+def _which(_):
+    return "/usr/local/bin/proton-drive"
+
+
 def test_discovery_raises_when_binary_missing(monkeypatch):
     monkeypatch.setattr("protondisk.core.runner.shutil.which", lambda _: None)
     with pytest.raises(CLINotFoundError):
         CLIRunner()
 
 
-def test_run_parses_json_stdout(monkeypatch):
-    monkeypatch.setattr("protondisk.core.runner.shutil.which", lambda _: "/usr/bin/proton-drive")
+def test_run_parses_json_array(monkeypatch):
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
-        return _Completed(0, stdout=json.dumps({"loggedIn": True}))
+        return _Completed(0, stdout=json.dumps([{"path": "/my-files"}]))
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    runner = CLIRunner()
-    result = runner.run("auth", "status")
-    assert result == {"loggedIn": True}
-    assert captured["cmd"] == ["/usr/bin/proton-drive", "auth", "status", "--json"]
+    result = CLIRunner().run("filesystem", "list", "/")
+    assert result == [{"path": "/my-files"}]
+    assert captured["cmd"] == [
+        "/usr/local/bin/proton-drive", "filesystem", "list", "/", "--json"]
+
+
+def test_run_undefined_stdout_returns_empty_dict(monkeypatch):
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **k: _Completed(0, stdout="undefined\n"))
+    assert CLIRunner().run("sharing", "status", "/my-files/x") == {}
 
 
 def test_run_empty_stdout_returns_empty_dict(monkeypatch):
-    monkeypatch.setattr("protondisk.core.runner.shutil.which", lambda _: "/usr/bin/proton-drive")
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
     monkeypatch.setattr(subprocess, "run", lambda cmd, **k: _Completed(0, stdout=""))
     assert CLIRunner().run("auth", "logout") == {}
 
 
-def test_run_maps_nonzero_to_exception(monkeypatch):
-    monkeypatch.setattr("protondisk.core.runner.shutil.which", lambda _: "/usr/bin/proton-drive")
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda cmd, **k: _Completed(1, stdout="", stderr="Path not found: /nope"),
-    )
-    with pytest.raises(NotFoundError):
-        CLIRunner().run("filesystem", "list", "/nope")
+def test_run_nonzero_maps_stderr_login_message(monkeypatch):
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **k: _Completed(1, stdout="", stderr="You need to login first"))
+    with pytest.raises(AuthError):
+        CLIRunner().run("filesystem", "list", "/my-files")
 
 
 @pytest.mark.parametrize("text,exc", [
     ("Path not found", NotFoundError),
-    ("You are not logged in", AuthError),
+    ("You need to login first", AuthError),
     ("File already exists", ConflictError),
     ("Rate limit exceeded", RateLimitError),
     ("Something weird happened", ProtonDiskError),
 ])
 def test_map_error_classification(text, exc):
     err = map_error(1, "", text)
-    assert isinstance(err, exc)
-    assert str(err)
+    assert isinstance(err, exc) and str(err)
 
 
 def test_map_error_prefers_json_error_message():
     stdout = json.dumps({"error": {"message": "Rate limit hit, slow down"}})
     err = map_error(1, stdout, "")
-    assert isinstance(err, RateLimitError)
-    assert "Rate limit" in str(err)
+    assert isinstance(err, RateLimitError) and "Rate limit" in str(err)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -521,12 +621,8 @@ import shutil
 import subprocess
 
 from .errors import (
-    ProtonDiskError,
-    CLINotFoundError,
-    AuthError,
-    NotFoundError,
-    ConflictError,
-    RateLimitError,
+    ProtonDiskError, CLINotFoundError, AuthError,
+    NotFoundError, ConflictError, RateLimitError,
 )
 
 BINARY_NAME = "proton-drive"
@@ -576,7 +672,7 @@ class CLIRunner:
         if completed.returncode != 0:
             raise map_error(completed.returncode, completed.stdout, completed.stderr)
         stdout = completed.stdout.strip()
-        if not stdout:
+        if not stdout or stdout == "undefined":
             return {}
         return json.loads(stdout)
 ```
@@ -589,11 +685,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.6\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.8
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/runner.py tests/test_runner.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): CLIRunner with discovery and error mapping (v0.1.6)
+  commit -m "feat(core): CLIRunner with discovery, undefined handling, error mapping (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -601,20 +697,20 @@ git push origin dev
 
 ---
 
-### Task 5: ProtonDisk façade — auth
+### Task 5: ProtonDisk façade — auth (probe-based)
 
 **Files:**
 - Create: `protondisk/core/client.py`
 - Test: `tests/test_client_auth.py`
 
 **Interfaces:**
-- Consumes: `CLIRunner` (Task 4), `AuthStatus` (Task 3).
+- Consumes: `CLIRunner`, `AuthStatus`, `AuthError`.
 - Produces:
-  - `ProtonDisk(runner=None)` — stores an injected runner; if `None`, constructs `CLIRunner()` lazily is NOT required here (accept the injected one; default `CLIRunner()`).
-  - `auth_status() -> AuthStatus` → `runner.run("auth", "status")`.
+  - `ProtonDisk(runner=None)` — stores injected runner; default `CLIRunner()`.
+  - `auth_status() -> AuthStatus` — calls `runner.run("filesystem", "info", "/my-files")`; on `AuthError` returns `AuthStatus(False, None)`; else `AuthStatus(True, data.get("ownedBy", {}).get("email"))`.
   - `login() -> None` → `runner.run("auth", "login")`.
   - `logout() -> None` → `runner.run("auth", "logout")`.
-- Test double: a `FakeRunner` recording `.calls` (list of arg tuples) and returning queued dicts.
+- Test double `FakeRunner`: records `.calls`; each entry either returns a queued result or raises a queued exception.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -622,6 +718,7 @@ git push origin dev
 ```python
 from protondisk.core.client import ProtonDisk
 from protondisk.core.models import AuthStatus
+from protondisk.core.errors import AuthError
 
 
 class FakeRunner:
@@ -631,15 +728,25 @@ class FakeRunner:
 
     def run(self, *args, input_text=None):
         self.calls.append(args)
-        return self._results.pop(0) if self._results else {}
+        if not self._results:
+            return {}
+        item = self._results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
-def test_auth_status_returns_parsed_status():
-    runner = FakeRunner([{"loggedIn": True, "account": "user@pm.me"}])
-    disk = ProtonDisk(runner=runner)
-    status = disk.auth_status()
+def test_auth_status_logged_in_reads_account_from_ownedBy():
+    runner = FakeRunner([{"type": "folder", "ownedBy": {"email": "user@pm.me"}}])
+    status = ProtonDisk(runner=runner).auth_status()
     assert status == AuthStatus(logged_in=True, account="user@pm.me")
-    assert runner.calls[0] == ("auth", "status")
+    assert runner.calls[0] == ("filesystem", "info", "/my-files")
+
+
+def test_auth_status_logged_out_on_auth_error():
+    runner = FakeRunner([AuthError("You need to login first")])
+    status = ProtonDisk(runner=runner).auth_status()
+    assert status == AuthStatus(logged_in=False, account=None)
 
 
 def test_login_invokes_cli():
@@ -667,16 +774,24 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'protondisk.core.client
 from __future__ import annotations
 
 from .runner import CLIRunner
+from .errors import AuthError, NotFoundError
 from .models import AuthStatus, Entry, TransferResult, ShareInfo
 
 
 class ProtonDisk:
+    ROOT = "/my-files"
+
     def __init__(self, runner: CLIRunner | None = None) -> None:
         self._runner = runner or CLIRunner()
 
     # --- auth ---
     def auth_status(self) -> AuthStatus:
-        return AuthStatus.from_json(self._runner.run("auth", "status"))
+        try:
+            data = self._runner.run("filesystem", "info", self.ROOT)
+        except AuthError:
+            return AuthStatus(logged_in=False, account=None)
+        account = data.get("ownedBy", {}).get("email") if isinstance(data, dict) else None
+        return AuthStatus(logged_in=True, account=account)
 
     def login(self) -> None:
         self._runner.run("auth", "login")
@@ -693,11 +808,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.7\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.9
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/client.py tests/test_client_auth.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): ProtonDisk auth methods (v0.1.7)
+  commit -m "feat(core): probe-based auth_status, login, logout (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -712,19 +827,15 @@ git push origin dev
 - Test: `tests/test_client_browse.py`
 
 **Interfaces:**
-- Consumes: `FakeRunner` pattern (Task 5), `Entry` (Task 3).
 - Produces (added to `ProtonDisk`):
-  - `list(path: str) -> list[Entry]` → `runner.run("filesystem", "list", path)`; reads the `items` key (default `[]`); each item parsed with `Entry.from_json(item, parent=path)`.
-  - `stat(path: str) -> Entry` → lists the parent directory and returns the entry whose `name` matches the basename; raises `NotFoundError` if absent. Root path `/my-files` (or `/`) returns a synthetic directory `Entry(name=basename, path=path, is_dir=True, size=None, mtime=None, id=None)`.
+  - `list(path: str) -> list[Entry]` → `runner.run("filesystem", "list", path)` returns a JSON **array**; each item → `Entry.from_json(item, parent=path)`. If the runner returns a non-list (e.g. `{}`), return `[]`.
+  - `stat(path: str) -> Entry` → `runner.run("filesystem", "info", path)` → `Entry.from_json(data, path=path)`.
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/test_client_browse.py`:
 ```python
-import pytest
-
 from protondisk.core.client import ProtonDisk
-from protondisk.core.errors import NotFoundError
 
 
 class FakeRunner:
@@ -737,45 +848,44 @@ class FakeRunner:
         return self._results.pop(0) if self._results else {}
 
 
-def test_list_parses_items_with_parent_path():
-    runner = FakeRunner([{"items": [
-        {"name": "Reports", "type": "folder"},
-        {"name": "q3.pdf", "type": "file", "size": 10},
-    ]}])
+LIST_MYFILES = [
+    {"uid": "U1", "name": {"ok": True, "value": "kaas.txt"}, "type": "file",
+     "totalStorageSize": 95, "modificationTime": "2026-03-26T00:51:13.000Z"},
+    {"uid": "U2", "name": {"ok": True, "value": "Test map"}, "type": "folder",
+     "modificationTime": "2026-03-26T02:17:11.000Z"},
+]
+
+
+def test_list_parses_array_with_parent_path():
+    runner = FakeRunner([LIST_MYFILES])
     entries = ProtonDisk(runner=runner).list("/my-files")
     assert runner.calls[0] == ("filesystem", "list", "/my-files")
-    assert [e.name for e in entries] == ["Reports", "q3.pdf"]
-    assert entries[0].path == "/my-files/Reports"
-    assert entries[0].is_dir is True
-    assert entries[1].size == 10
+    assert [e.name for e in entries] == ["kaas.txt", "Test map"]
+    assert entries[0].path == "/my-files/kaas.txt"
+    assert entries[0].size == 95
+    assert entries[1].is_dir is True
 
 
-def test_list_missing_items_key_returns_empty():
+def test_list_sections_from_root():
+    runner = FakeRunner([[{"path": "/my-files"}, {"path": "/trash"}]])
+    entries = ProtonDisk(runner=runner).list("/")
+    assert [e.name for e in entries] == ["my-files", "trash"]
+    assert all(e.is_dir for e in entries)
+
+
+def test_list_non_list_returns_empty():
     assert ProtonDisk(runner=FakeRunner([{}])).list("/my-files") == []
 
 
-def test_stat_finds_entry_in_parent_listing():
-    runner = FakeRunner([{"items": [
-        {"name": "q3.pdf", "type": "file", "size": 10},
-    ]}])
-    entry = ProtonDisk(runner=runner).stat("/my-files/q3.pdf")
-    assert entry.name == "q3.pdf"
+def test_stat_uses_info_and_path_override():
+    info = {"uid": "U1", "name": {"ok": True, "value": "kaas.txt"}, "type": "file",
+            "totalStorageSize": 95, "modificationTime": "2026-03-26T00:51:13.000Z"}
+    runner = FakeRunner([info])
+    entry = ProtonDisk(runner=runner).stat("/my-files/kaas.txt")
+    assert runner.calls[0] == ("filesystem", "info", "/my-files/kaas.txt")
+    assert entry.name == "kaas.txt"
+    assert entry.path == "/my-files/kaas.txt"
     assert entry.is_dir is False
-    assert runner.calls[0] == ("filesystem", "list", "/my-files")
-
-
-def test_stat_missing_entry_raises_not_found():
-    runner = FakeRunner([{"items": []}])
-    with pytest.raises(NotFoundError):
-        ProtonDisk(runner=runner).stat("/my-files/missing.pdf")
-
-
-def test_stat_root_is_synthetic_directory():
-    runner = FakeRunner()
-    entry = ProtonDisk(runner=runner).stat("/my-files")
-    assert entry.is_dir is True
-    assert entry.path == "/my-files"
-    assert runner.calls == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -785,34 +895,18 @@ Expected: FAIL — `AttributeError: 'ProtonDisk' object has no attribute 'list'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `protondisk/core/client.py` (import `NotFoundError`, add a helper, and the methods). Update the imports line and append methods:
-
-```python
-from .errors import NotFoundError
-```
-
-Append inside the `ProtonDisk` class:
+Append inside the `ProtonDisk` class in `protondisk/core/client.py`:
 ```python
     # --- browsing ---
-    _ROOTS = ("/", "/my-files")
-
     def list(self, path: str) -> list[Entry]:
         data = self._runner.run("filesystem", "list", path)
-        items = data.get("items", []) if isinstance(data, dict) else []
-        return [Entry.from_json(item, parent=path) for item in items]
+        if not isinstance(data, list):
+            return []
+        return [Entry.from_json(item, parent=path) for item in data]
 
     def stat(self, path: str) -> Entry:
-        normalized = path.rstrip("/") or "/"
-        if normalized in self._ROOTS:
-            name = normalized.rstrip("/").rsplit("/", 1)[-1] or "/"
-            return Entry(name=name, path=normalized, is_dir=True,
-                         size=None, mtime=None, id=None)
-        parent, _, base = normalized.rpartition("/")
-        parent = parent or "/"
-        for entry in self.list(parent):
-            if entry.name == base:
-                return entry
-        raise NotFoundError(f"No such path: {path}")
+        data = self._runner.run("filesystem", "info", path)
+        return Entry.from_json(data, path=path)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -823,11 +917,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.8\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.10
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/client.py tests/test_client_browse.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): browsing methods list and stat (v0.1.8)
+  commit -m "feat(core): browsing methods list and stat (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -842,15 +936,109 @@ git push origin dev
 - Test: `tests/test_client_transfer.py`
 
 **Interfaces:**
-- Consumes: `TransferResult` (Task 3).
 - Produces (added to `ProtonDisk`):
-  - `upload(local: str, remote: str, *, conflict: str = "skip") -> TransferResult` → `runner.run("filesystem", "upload", local, remote, "--conflict-strategy", conflict)`.
-  - `download(remote: str, local: str) -> TransferResult` → `runner.run("filesystem", "download", remote, local)`.
-  - Both parse the runner result with `TransferResult.from_json`.
+  - `upload(local: str, parent: str, *, conflict: str = "skip") -> TransferResult` → `runner.run("filesystem", "upload", "--conflict-strategy", conflict, local, parent)`.
+  - `download(remote: str, local_folder: str) -> TransferResult` → `runner.run("filesystem", "download", remote, local_folder)`.
+  - Both parse with `TransferResult.from_json`.
 
 - [ ] **Step 1: Write the failing test**
 
 `tests/test_client_transfer.py`:
+```python
+from protondisk.core.client import ProtonDisk
+
+TRANSFER = {"transferredItems": 1, "transferredBytes": 17,
+            "skippedItems": 0, "failedItems": 0, "failures": []}
+
+
+class FakeRunner:
+    def __init__(self, results=None):
+        self.calls = []
+        self._results = list(results or [])
+
+    def run(self, *args, input_text=None):
+        self.calls.append(args)
+        return self._results.pop(0) if self._results else {}
+
+
+def test_upload_passes_conflict_strategy_and_parses_result():
+    runner = FakeRunner([TRANSFER])
+    result = ProtonDisk(runner=runner).upload("./a.txt", "/my-files", conflict="replace")
+    assert runner.calls[0] == (
+        "filesystem", "upload", "--conflict-strategy", "replace", "./a.txt", "/my-files")
+    assert result.transferred_items == 1 and result.transferred_bytes == 17
+
+
+def test_upload_default_conflict_is_skip():
+    runner = FakeRunner([TRANSFER])
+    ProtonDisk(runner=runner).upload("./a.txt", "/my-files")
+    assert runner.calls[0][:4] == (
+        "filesystem", "upload", "--conflict-strategy", "skip")
+
+
+def test_download_parses_result():
+    runner = FakeRunner([TRANSFER])
+    result = ProtonDisk(runner=runner).download("/my-files/a.txt", "./dl")
+    assert runner.calls[0] == ("filesystem", "download", "/my-files/a.txt", "./dl")
+    assert result.transferred_bytes == 17
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_client_transfer.py -v`
+Expected: FAIL — `AttributeError: 'ProtonDisk' object has no attribute 'upload'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Append inside the `ProtonDisk` class in `protondisk/core/client.py`:
+```python
+    # --- transfer ---
+    def upload(self, local: str, parent: str, *, conflict: str = "skip") -> TransferResult:
+        data = self._runner.run(
+            "filesystem", "upload", "--conflict-strategy", conflict, local, parent)
+        return TransferResult.from_json(data)
+
+    def download(self, remote: str, local_folder: str) -> TransferResult:
+        data = self._runner.run("filesystem", "download", remote, local_folder)
+        return TransferResult.from_json(data)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_client_transfer.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+ver=$(scripts/bump-patch.sh)   # -> 0.1.11
+git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
+  add protondisk/core/client.py tests/test_client_transfer.py VERSION
+git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
+  commit -m "feat(core): transfer methods upload and download (v$ver)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git push origin dev
+```
+
+---
+
+### Task 8: ProtonDisk façade — organize (mkdir, rename, move, trash)
+
+**Files:**
+- Modify: `protondisk/core/client.py`
+- Test: `tests/test_client_organize.py`
+
+**Interfaces:**
+- Produces (added to `ProtonDisk`):
+  - `mkdir(path: str) -> None` — split `path` into `parent`/`name` on the last `/`; → `runner.run("filesystem", "create-folder", parent, name)`.
+  - `rename(path: str, new_name: str) -> None` → `runner.run("filesystem", "rename", path, new_name)`.
+  - `move(src: str, target_parent: str) -> None` → `runner.run("filesystem", "move", src, target_parent)`.
+  - `trash(path: str) -> None` → `runner.run("filesystem", "trash", path)`.
+
+- [ ] **Step 1: Write the failing test**
+
+`tests/test_client_organize.py`:
 ```python
 from protondisk.core.client import ProtonDisk
 
@@ -865,113 +1053,26 @@ class FakeRunner:
         return self._results.pop(0) if self._results else {}
 
 
-def test_upload_passes_conflict_strategy_and_parses_result():
-    runner = FakeRunner([
-        {"source": "./a.txt", "destination": "/my-files/a.txt", "bytes": 5}])
-    result = ProtonDisk(runner=runner).upload("./a.txt", "/my-files", conflict="skip")
-    assert runner.calls[0] == (
-        "filesystem", "upload", "./a.txt", "/my-files", "--conflict-strategy", "skip")
-    assert result.bytes == 5
-    assert result.destination == "/my-files/a.txt"
-
-
-def test_upload_default_conflict_is_skip():
-    runner = FakeRunner()
-    ProtonDisk(runner=runner).upload("./a.txt", "/my-files")
-    assert runner.calls[0][-2:] == ("--conflict-strategy", "skip")
-
-
-def test_download_parses_result():
-    runner = FakeRunner([
-        {"source": "/my-files/a.txt", "destination": "./a.txt", "bytes": 5}])
-    result = ProtonDisk(runner=runner).download("/my-files/a.txt", "./")
-    assert runner.calls[0] == ("filesystem", "download", "/my-files/a.txt", "./")
-    assert result.source == "/my-files/a.txt"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python -m pytest tests/test_client_transfer.py -v`
-Expected: FAIL — `AttributeError: 'ProtonDisk' object has no attribute 'upload'`
-
-- [ ] **Step 3: Write minimal implementation**
-
-Append inside the `ProtonDisk` class in `protondisk/core/client.py`:
-```python
-    # --- transfer ---
-    def upload(self, local: str, remote: str, *, conflict: str = "skip") -> TransferResult:
-        data = self._runner.run(
-            "filesystem", "upload", local, remote, "--conflict-strategy", conflict)
-        return TransferResult.from_json(data)
-
-    def download(self, remote: str, local: str) -> TransferResult:
-        data = self._runner.run("filesystem", "download", remote, local)
-        return TransferResult.from_json(data)
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python -m pytest tests/test_client_transfer.py -v`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-printf '0.1.9\n' > VERSION
-git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  add protondisk/core/client.py tests/test_client_transfer.py VERSION
-git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): transfer methods upload and download (v0.1.9)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
-git push origin dev
-```
-
----
-
-### Task 8: ProtonDisk façade — organize (mkdir, move, trash)
-
-**Files:**
-- Modify: `protondisk/core/client.py`
-- Test: `tests/test_client_organize.py`
-
-**Interfaces:**
-- Consumes: nothing new.
-- Produces (added to `ProtonDisk`; argv spellings are **assumed** and flagged in Global Constraints):
-  - `mkdir(path: str) -> None` → `runner.run("filesystem", "mkdir", path)`.
-  - `move(src: str, dst: str) -> None` → `runner.run("filesystem", "move", src, dst)`.
-  - `trash(path: str) -> None` → `runner.run("filesystem", "trash", path)`.
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/test_client_organize.py`:
-```python
-from protondisk.core.client import ProtonDisk
-
-
-class FakeRunner:
-    def __init__(self):
-        self.calls = []
-
-    def run(self, *args, input_text=None):
-        self.calls.append(args)
-        return {}
-
-
-def test_mkdir_invokes_cli():
-    runner = FakeRunner()
+def test_mkdir_splits_parent_and_name():
+    runner = FakeRunner([{"uid": "U", "name": {"ok": True, "value": "New"}, "type": "folder"}])
     ProtonDisk(runner=runner).mkdir("/my-files/New")
-    assert runner.calls[0] == ("filesystem", "mkdir", "/my-files/New")
+    assert runner.calls[0] == ("filesystem", "create-folder", "/my-files", "New")
 
 
-def test_move_invokes_cli():
-    runner = FakeRunner()
-    ProtonDisk(runner=runner).move("/my-files/a.txt", "/my-files/b.txt")
-    assert runner.calls[0] == ("filesystem", "move", "/my-files/a.txt", "/my-files/b.txt")
+def test_rename_invokes_cli():
+    runner = FakeRunner([{"uid": "U", "name": {"ok": True, "value": "b.txt"}, "type": "file"}])
+    ProtonDisk(runner=runner).rename("/my-files/a.txt", "b.txt")
+    assert runner.calls[0] == ("filesystem", "rename", "/my-files/a.txt", "b.txt")
+
+
+def test_move_targets_parent_folder():
+    runner = FakeRunner([[{"uid": "U", "ok": True}]])
+    ProtonDisk(runner=runner).move("/my-files/a.txt", "/my-files/Folder")
+    assert runner.calls[0] == ("filesystem", "move", "/my-files/a.txt", "/my-files/Folder")
 
 
 def test_trash_invokes_cli():
-    runner = FakeRunner()
+    runner = FakeRunner([[{"uid": "U", "ok": True}]])
     ProtonDisk(runner=runner).trash("/my-files/old.txt")
     assert runner.calls[0] == ("filesystem", "trash", "/my-files/old.txt")
 ```
@@ -987,10 +1088,14 @@ Append inside the `ProtonDisk` class in `protondisk/core/client.py`:
 ```python
     # --- organize ---
     def mkdir(self, path: str) -> None:
-        self._runner.run("filesystem", "mkdir", path)
+        parent, _, name = path.rstrip("/").rpartition("/")
+        self._runner.run("filesystem", "create-folder", parent or "/", name)
 
-    def move(self, src: str, dst: str) -> None:
-        self._runner.run("filesystem", "move", src, dst)
+    def rename(self, path: str, new_name: str) -> None:
+        self._runner.run("filesystem", "rename", path, new_name)
+
+    def move(self, src: str, target_parent: str) -> None:
+        self._runner.run("filesystem", "move", src, target_parent)
 
     def trash(self, path: str) -> None:
         self._runner.run("filesystem", "trash", path)
@@ -1004,11 +1109,11 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.10\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.12
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/client.py tests/test_client_organize.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): organize methods mkdir move trash (v0.1.10)
+  commit -m "feat(core): organize methods mkdir rename move trash (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -1016,7 +1121,9 @@ git push origin dev
 
 ---
 
-### Task 9: ProtonDisk façade — sharing + public exports
+### Task 9: ProtonDisk façade — sharing + public exports  ⚠️ VERSION 13 SKIP
+
+> **This task's bump lands on patch 13**, so `scripts/bump-patch.sh` jumps 0.1.13 → **0.1.14** and prints the skip notice. **Per project rule, this commit's message MUST be `To be sure to be sure!`** (the feature is described in the commit body).
 
 **Files:**
 - Modify: `protondisk/core/client.py`
@@ -1024,11 +1131,10 @@ git push origin dev
 - Test: `tests/test_client_sharing.py`
 
 **Interfaces:**
-- Consumes: `ShareInfo` (Task 3).
 - Produces (added to `ProtonDisk`):
-  - `sharing_status(path: str) -> ShareInfo` → `runner.run("sharing", "status", path)`.
-  - `sharing_invite(path: str, user: str, role: str = "editor", message: str = "") -> None` → `runner.run("sharing", "invite", "--user", user, "--role", role, "--message", message, path)`.
-- Also: `protondisk/core/__init__.py` re-exports `ProtonDisk`, all models, and all errors so consumers can `from protondisk.core import ProtonDisk, Entry, AuthError`.
+  - `sharing_status(path: str) -> ShareInfo` → `ShareInfo.from_json(runner.run("sharing", "status", path), path=path)` (unshared `{}` → not shared).
+  - `sharing_invite(path: str, user: str, role: str = "viewer", message: str = "") -> None` → argv `["sharing", "invite", "--user", user, "--role", role]` + (`["--message", message]` only if `message`) + `[path]`.
+- `protondisk/core/__init__.py` re-exports `ProtonDisk`, all models, all errors.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1047,22 +1153,29 @@ class FakeRunner:
         return self._results.pop(0) if self._results else {}
 
 
-def test_sharing_status_parses_members():
-    runner = FakeRunner([{"path": "/my-files/Reports", "shared": True,
-                          "members": [{"email": "a@pm.me"}]}])
-    info = ProtonDisk(runner=runner).sharing_status("/my-files/Reports")
+def test_sharing_status_unshared_returns_not_shared():
+    runner = FakeRunner([{}])  # runner maps `undefined` -> {}
+    info = ProtonDisk(runner=runner).sharing_status("/my-files/kaas.txt")
     assert isinstance(info, ShareInfo)
-    assert info.members == ["a@pm.me"]
-    assert runner.calls[0] == ("sharing", "status", "/my-files/Reports")
+    assert info.shared is False and info.members == []
+    assert runner.calls[0] == ("sharing", "status", "/my-files/kaas.txt")
 
 
-def test_sharing_invite_passes_all_flags():
+def test_sharing_invite_with_message_passes_all_flags():
     runner = FakeRunner()
     ProtonDisk(runner=runner).sharing_invite(
         "/my-files/Reports", "b@pm.me", role="editor", message="pls review")
     assert runner.calls[0] == (
         "sharing", "invite", "--user", "b@pm.me", "--role", "editor",
         "--message", "pls review", "/my-files/Reports")
+
+
+def test_sharing_invite_omits_empty_message_and_defaults_viewer():
+    runner = FakeRunner()
+    ProtonDisk(runner=runner).sharing_invite("/my-files/Reports", "b@pm.me")
+    assert runner.calls[0] == (
+        "sharing", "invite", "--user", "b@pm.me", "--role", "viewer",
+        "/my-files/Reports")
 
 
 def test_error_is_reexported():
@@ -1080,13 +1193,16 @@ Append inside the `ProtonDisk` class in `protondisk/core/client.py`:
 ```python
     # --- sharing ---
     def sharing_status(self, path: str) -> ShareInfo:
-        return ShareInfo.from_json(self._runner.run("sharing", "status", path))
+        data = self._runner.run("sharing", "status", path)
+        return ShareInfo.from_json(data, path=path)
 
-    def sharing_invite(self, path: str, user: str, role: str = "editor",
+    def sharing_invite(self, path: str, user: str, role: str = "viewer",
                        message: str = "") -> None:
-        self._runner.run(
-            "sharing", "invite", "--user", user, "--role", role,
-            "--message", message, path)
+        args = ["sharing", "invite", "--user", user, "--role", role]
+        if message:
+            args += ["--message", message]
+        args.append(path)
+        self._runner.run(*args)
 ```
 
 Replace `protondisk/core/__init__.py` with:
@@ -1095,26 +1211,14 @@ Replace `protondisk/core/__init__.py` with:
 from .client import ProtonDisk
 from .models import Entry, AuthStatus, TransferResult, ShareInfo
 from .errors import (
-    ProtonDiskError,
-    CLINotFoundError,
-    AuthError,
-    NotFoundError,
-    ConflictError,
-    RateLimitError,
+    ProtonDiskError, CLINotFoundError, AuthError,
+    NotFoundError, ConflictError, RateLimitError,
 )
 
 __all__ = [
-    "ProtonDisk",
-    "Entry",
-    "AuthStatus",
-    "TransferResult",
-    "ShareInfo",
-    "ProtonDiskError",
-    "CLINotFoundError",
-    "AuthError",
-    "NotFoundError",
-    "ConflictError",
-    "RateLimitError",
+    "ProtonDisk", "Entry", "AuthStatus", "TransferResult", "ShareInfo",
+    "ProtonDiskError", "CLINotFoundError", "AuthError",
+    "NotFoundError", "ConflictError", "RateLimitError",
 ]
 ```
 
@@ -1123,14 +1227,17 @@ __all__ = [
 Run: `python -m pytest tests/test_client_sharing.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit (VERSION 13 SKIP — special message)**
 
 ```bash
-printf '0.1.11\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # 0.1.13 -> skipped to 0.1.14 (prints skip notice to stderr)
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/core/client.py protondisk/core/__init__.py tests/test_client_sharing.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): sharing methods and public core exports (v0.1.11)
+  commit -m "To be sure to be sure! (v$ver)
+
+feat(core): sharing methods (sharing_status, sharing_invite) and public core exports.
+Patch version 0.1.13 skipped per project rule.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -1145,10 +1252,8 @@ git push origin dev
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- Consumes: `ProtonDisk` (Task 5-9), `ProtonDiskError` (Task 2), `__version__` (Task 1).
 - Produces:
-  - `main(argv: list[str] | None = None, disk: ProtonDisk | None = None) -> int` — argparse with subcommands `version`, `auth-status`, `ls PATH`. `disk` is injectable for testing (defaults to `ProtonDisk()`). Prints human-readable lines. Returns `0` on success; on `ProtonDiskError` prints `error: <msg>` to stderr and returns `1`. `version` prints `__version__` and never constructs a disk.
-  - This proves the whole core end-to-end and is the manual live-test tool: `protondisk auth-status`, `protondisk ls /my-files`.
+  - `main(argv: list[str] | None = None, disk: ProtonDisk | None = None) -> int` — argparse with subcommands `version`, `auth-status`, `ls PATH`. `disk` injectable (default `ProtonDisk()`). `version` prints `__version__` without constructing a disk. On `ProtonDiskError`, prints `error: <msg>` to stderr and returns `1`; else `0`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1178,33 +1283,29 @@ class FakeDisk:
 
 
 def test_version_prints_version(capsys):
-    rc = main(["version"])
-    assert rc == 0
+    assert main(["version"]) == 0
     assert protondisk.__version__ in capsys.readouterr().out
 
 
 def test_auth_status_prints_account(capsys):
     disk = FakeDisk(status=AuthStatus(logged_in=True, account="user@pm.me"))
-    rc = main(["auth-status"], disk=disk)
-    assert rc == 0
+    assert main(["auth-status"], disk=disk) == 0
     assert "user@pm.me" in capsys.readouterr().out
 
 
 def test_ls_lists_entries(capsys):
     disk = FakeDisk(entries=[
-        Entry("Reports", "/my-files/Reports", True, None, None, None),
-        Entry("q3.pdf", "/my-files/q3.pdf", False, 10, None, None),
+        Entry("Reports", "/my-files/Reports", True, None, None, "U1"),
+        Entry("q3.pdf", "/my-files/q3.pdf", False, 10, None, "U2"),
     ])
-    rc = main(["ls", "/my-files"], disk=disk)
+    assert main(["ls", "/my-files"], disk=disk) == 0
     out = capsys.readouterr().out
-    assert rc == 0
     assert "Reports" in out and "q3.pdf" in out
 
 
 def test_error_returns_1_and_prints_stderr(capsys):
     disk = FakeDisk(error=AuthError("not logged in"))
-    rc = main(["auth-status"], disk=disk)
-    assert rc == 1
+    assert main(["auth-status"], disk=disk) == 1
     assert "not logged in" in capsys.readouterr().err
 ```
 
@@ -1249,14 +1350,10 @@ def main(argv: list[str] | None = None, disk: ProtonDisk | None = None) -> int:
     try:
         if args.command == "auth-status":
             status = disk.auth_status()
-            if status.logged_in:
-                print(f"logged in as {status.account}")
-            else:
-                print("not logged in")
+            print(f"logged in as {status.account}" if status.logged_in else "not logged in")
         elif args.command == "ls":
             for entry in disk.list(args.path):
-                marker = "/" if entry.is_dir else " "
-                print(f"{marker} {entry.name}")
+                print(f"{'/' if entry.is_dir else ' '} {entry.name}")
     except ProtonDiskError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1267,19 +1364,23 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run the full suite to verify everything passes**
 
 Run: `python -m pytest tests/ -v`
-Expected: PASS (all suites, full core + CLI)
+Expected: PASS (all suites)
+
+Optional live smoke test (requires a logged-in session; not for CI):
+Run: `python -m protondisk.cli auth-status` → prints `logged in as <account>`
+Run: `python -m protondisk.cli ls /my-files` → lists your Drive root
 
 - [ ] **Step 5: Commit**
 
 ```bash
-printf '0.1.12\n' > VERSION
+ver=$(scripts/bump-patch.sh)   # -> 0.1.15
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
   add protondisk/cli.py tests/test_cli.py VERSION
 git -c user.name='mbeulens' -c user.email='m.beulens@syntec-it.nl' \
-  commit -m "feat(core): thin protondisk CLI entrypoint (v0.1.12)
+  commit -m "feat(core): thin protondisk CLI entrypoint (v$ver)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push origin dev
@@ -1289,30 +1390,31 @@ git push origin dev
 
 ## Milestone Completion — "Bump minor" to 0.2.0
 
-After all 10 tasks pass, when you (the user) say **"Bump minor"**, I will:
+After all 10 tasks pass, when the user says **"Bump minor"**, do:
 
 1. Create/update `CHANGELOG.md` documenting the 0.2.0 core release.
-2. Update `README.md` (install prerequisites, `protondisk` usage, core API overview).
+2. Update `README.md` (install prerequisites: `proton-drive` binary + Python 3.12; `protondisk` usage; core API overview).
 3. Set `VERSION` to `0.2.0`.
-4. Commit to `dev`, then merge `dev` → `main`, and push both branches.
+4. Commit to `dev`, merge `dev` → `main`, push both branches.
 
 ---
 
 ## Self-Review
 
-**1. Spec coverage (Milestone 1 scope):**
-- Core API (auth/list/stat/upload/download/mkdir/move/trash/sharing) → Tasks 5-9 ✅
-- `_run` subprocess helper + JSON parsing → Task 4 ✅
-- Typed dataclasses → Task 3 ✅
-- Error hierarchy (all 6 classes incl. `RateLimitError`, `CLINotFoundError`) → Task 2, used in Task 4 ✅
-- CLI binary discovery → Task 4 ✅
-- Fixture/fake-boundary testing, no account needed → every task ✅
-- `protondisk/cli.py` entrypoint → Task 10 ✅
-- `pyproject.toml`, package layout, VERSION-driven version → Task 1 ✅
-- GUI, mount, config file → **intentionally deferred** to later milestones (out of scope here) ✅
+**1. Spec coverage (Milestone 1 scope, per design doc §4 + §12):**
+- Core API auth/list/stat/upload/download/mkdir/rename/move/trash/sharing → Tasks 5–9 ✅
+- `CLIRunner` (discovery, JSON/undefined/empty handling, error mapping) → Task 4 ✅
+- Typed dataclasses with real shapes (Result-wrapped names, ISO times, uid, transfer fields) → Task 3 ✅
+- Error hierarchy (6 classes) → Task 2 ✅
+- Probe-based `auth_status` reading `ownedBy.email` → Task 5 ✅
+- Fake-runner testing, no account needed → every task ✅
+- `protondisk/cli.py` → Task 10 ✅
+- Packaging + VERSION-driven version + bump script → Task 1 ✅
+- Versioning rule incl. 13-skip with `To be sure to be sure!` → Task 9 ✅
+- GUI, mount, config file → deferred to later milestones ✅
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows complete code. ✅
 
-**3. Type consistency:** `ProtonDisk`, `CLIRunner`, `map_error`, `Entry/AuthStatus/TransferResult/ShareInfo.from_json`, and the `FakeRunner.run(*args, input_text=None)` signature are consistent across all tasks. Method names (`auth_status`, `sharing_status`, `sharing_invite`) match the design doc. ✅
+**3. Type consistency:** `ProtonDisk`, `CLIRunner`, `map_error`, `Entry/TransferResult/ShareInfo.from_json`, `AuthStatus`, and `FakeRunner.run(*args, input_text=None)` are consistent across tasks. Method names match §12 (`auth_status`, `stat`, `mkdir`, `rename`, `move`, `trash`, `sharing_status`, `sharing_invite`). `Entry` fields (`name/path/is_dir/size/mtime/uid`) are consistent everywhere. ✅
 
-**Note carried forward:** assumed `--json` schemas and `filesystem mkdir/move` argv must be reconciled against the real `proton-drive` binary during live testing; the isolation in `models.py`/`client.py` keeps that a localized fix.
+**Remaining live-only unknown:** the JSON shape of `sharing status` for a *shared* node (the shared root errored on decrypt during capture). `ShareInfo.from_json` handles the unshared case exactly; the shared-node member list is best-effort until captured against a genuinely shared node. Flagged here; localized to `ShareInfo`.
