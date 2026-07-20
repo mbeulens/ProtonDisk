@@ -18,11 +18,11 @@ class FakeDisk:
     def list(self, path):
         return [Entry("a.txt", "/my-files/a.txt", False, 10, None, "u2")]
 
-    def upload(self, local, parent, *, conflict="skip"):
+    def upload(self, local, parent, *, conflict="skip", progress=None):
         self.uploads.append((local, parent, conflict))
         return TransferResult(1, 10, 0, 0, [])
 
-    def download(self, remote, folder):
+    def download(self, remote, folder, *, progress=None):
         self.downloads.append((remote, folder))
         return TransferResult(1, 10, 0, 0, [])
 

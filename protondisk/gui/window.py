@@ -5,7 +5,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, Gio, GObject  # noqa: E402
+from gi.repository import Gtk, Adw, Gio, GObject, GLib  # noqa: E402
 
 from .navigation import NavigationState
 from .worker import run_async
@@ -44,8 +44,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._back_btn = Gtk.Button(icon_name="go-previous-symbolic", sensitive=False)
         self._fwd_btn = Gtk.Button(icon_name="go-next-symbolic", sensitive=False)
         self._refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
-        self._upload_btn = Gtk.Button(icon_name="document-send-symbolic")
-        self._download_btn = Gtk.Button(icon_name="folder-download-symbolic")
+        self._upload_btn = Gtk.Button(
+            child=Adw.ButtonContent(icon_name="go-up-symbolic", label="Upload"))
+        self._upload_btn.set_tooltip_text("Upload files into this folder")
+        self._download_btn = Gtk.Button(
+            child=Adw.ButtonContent(icon_name="go-down-symbolic", label="Download"))
+        self._download_btn.set_tooltip_text("Download the selected file")
         self._back_btn.connect("clicked", self._on_back)
         self._fwd_btn.connect("clicked", self._on_forward)
         self._refresh_btn.connect("clicked", self._on_refresh)
@@ -70,10 +74,16 @@ class MainWindow(Adw.ApplicationWindow):
         self._toasts = Adw.ToastOverlay(child=self._stack)
         self._toolbar.set_content(self._toasts)
 
-        self._status = Gtk.Label(xalign=0, margin_start=8, margin_end=8,
-                                 margin_top=4, margin_bottom=4)
+        status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
+                             margin_start=8, margin_end=8, margin_top=4, margin_bottom=4)
+        self._spinner = Gtk.Spinner()
+        self._spinner.set_visible(False)
+        self._status = Gtk.Label(xalign=0)
         self._status.add_css_class("dim-label")
-        self._toolbar.add_bottom_bar(self._status)
+        status_bar.append(self._spinner)
+        status_bar.append(self._status)
+        self._toolbar.add_bottom_bar(status_bar)
+        self._active_transfers = 0
 
         self.set_content(self._toolbar)
 
@@ -98,6 +108,35 @@ class MainWindow(Adw.ApplicationWindow):
         noun = "item" if n_items == 1 else "items"
         base = f"{n_items} {noun}"
         return f"{base} · {account}" if account else base
+
+    @staticmethod
+    def _activity_text(kind: str, name: str) -> str:
+        verb = "Uploading" if kind == "upload" else "Downloading"
+        return f"{verb} {name}…"
+
+    # ---- transfer activity indicator (throbber + phase in the status bar) ----
+    def _begin_activity(self, text: str) -> None:
+        self._active_transfers += 1
+        self._spinner.set_visible(True)
+        self._spinner.start()
+        self._status.set_label(text)
+
+    def _set_activity_phase(self, name: str, phase: str) -> None:
+        # phase is a verbose label like "Encrypting…"; show it with the file name
+        if self._active_transfers > 0:
+            self._status.set_label(f"{phase} {name}")
+        return False
+
+    def _end_activity(self) -> None:
+        self._active_transfers = max(0, self._active_transfers - 1)
+        if self._active_transfers == 0:
+            self._spinner.stop()
+            self._spinner.set_visible(False)
+            self._status.set_label(self._status_text(len(self._store), self._account))
+
+    def _progress_cb(self, name: str):
+        # returned callable runs on the worker thread; marshal onto the main loop
+        return lambda phase: GLib.idle_add(self._set_activity_phase, name, phase)
 
     # ---- view construction ----
     def _build_loading_view(self) -> Gtk.Widget:
@@ -244,11 +283,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _can_download(row_is_dir) -> bool:
         return row_is_dir is False  # True only for a selected file
 
-    def _upload_one(self, local: str):
-        return self._disk.upload(local, self._nav.current, conflict="skip")
+    def _upload_one(self, local: str, progress=None):
+        return self._disk.upload(local, self._nav.current, conflict="skip", progress=progress)
 
-    def _download_one(self, remote: str, folder: str):
-        return self._disk.download(remote, folder)
+    def _download_one(self, remote: str, folder: str, progress=None):
+        return self._disk.download(remote, folder, progress=progress)
 
     def _selected_row(self):
         pos = self._selection.get_selected()
@@ -271,12 +310,22 @@ class MainWindow(Adw.ApplicationWindow):
             return  # user cancelled
         locals_ = [f.get_path() for f in files if f.get_path()]
         for local in locals_:
-            run_async(lambda l=local: self._upload_one(l),
-                      lambda _r, l=local: self._on_upload_done(l), self._on_error)
+            name = local.rsplit("/", 1)[-1]
+            self._begin_activity(self._activity_text("upload", name))
+            run_async(
+                lambda l=local, n=name: self._upload_one(l, progress=self._progress_cb(n)),
+                lambda _r, l=local: self._on_upload_done(l),
+                self._on_transfer_error)
 
     def _on_upload_done(self, local: str) -> None:
+        self._end_activity()
         self._toast(f"Uploaded {local.rsplit('/', 1)[-1]}")
         self._reload(self._nav.refresh)
+        return False
+
+    def _on_transfer_error(self, exc) -> None:
+        self._end_activity()
+        self._on_error(exc)
         return False
 
     def _on_download_clicked(self, _btn) -> None:
@@ -294,9 +343,14 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             return  # cancelled
         target = folder.get_path()
-        run_async(lambda: self._download_one(remote_path, target),
-                  lambda _r: self._on_download_done(remote_path), self._on_error)
+        name = remote_path.rsplit("/", 1)[-1]
+        self._begin_activity(self._activity_text("download", name))
+        run_async(
+            lambda: self._download_one(remote_path, target, progress=self._progress_cb(name)),
+            lambda _r: self._on_download_done(remote_path),
+            self._on_transfer_error)
 
     def _on_download_done(self, remote_path: str) -> None:
+        self._end_activity()
         self._toast(f"Downloaded {remote_path.rsplit('/', 1)[-1]}")
         return False
