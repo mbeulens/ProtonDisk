@@ -7,6 +7,37 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [0.3.0] — 2026-07-20
+
+Second milestone (first increment): **the GTK4 + libadwaita graphical browser**,
+`protondisk gui`. Built entirely on `protondisk.core`; every network call runs off
+the UI thread so the window never freezes.
+
+### Added
+- **`protondisk/gui/` — a GTK4/libadwaita desktop app** launched with `protondisk gui`:
+  - Sign-in gating (a "Sign in with Proton" screen when logged out; the account
+    email is shown in the header).
+  - **Browse & navigate** `My files`: a list view with folder/file icons and
+    human-readable sizes, a clickable breadcrumb, Back/Forward history, and Refresh.
+  - **Upload & download** via labeled toolbar buttons and native file pickers,
+    with completion toasts.
+  - **Live transfer progress** in the status bar: a throbber plus the current phase
+    (Starting / Encrypting / Uploading / Downloading / Verifying / Decrypting /
+    Finishing), parsed from the CLI's `--verbose` stream.
+  - Error dialogs on failure; the view always recovers (never a stuck spinner).
+- **Core additions supporting the GUI:**
+  - `CLIRunner.run_streaming` — reads the CLI's output line-by-line so transfer
+    progress can be surfaced as it happens.
+  - `parse_progress_line` — maps `--verbose` log lines to short phase labels.
+  - `upload`/`download` accept an optional `progress=` callback.
+- **Launcher & icon:** `scripts/protondisk-gui` (self-healing GTK venv, always runs
+  the latest source) and `assets/protondisk.svg`, for a desktop `.desktop` entry.
+
+### Notes
+- The GUI needs system PyGObject/GTK4/libadwaita. Use a `--system-site-packages`
+  virtualenv (see README); tests run under it.
+- Organize (rename/move/trash) and sharing are not yet in the GUI — next increment.
+
 ## [0.2.0] — 2026-07-20
 
 First functional milestone: **the core CLI wrapper** (`protondisk.core`) — the

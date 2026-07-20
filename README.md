@@ -17,7 +17,7 @@ lacks: a **mountable disk** and a **graphical browser**.
 | Milestone | Feature | State |
 |-----------|---------|-------|
 | **1** | **Core CLI wrapper** (`protondisk.core`) | ✅ **Done — v0.2.0** |
-| 2 | GTK4 + libadwaita graphical browser | ⏳ Next |
+| **2** | **GTK4 + libadwaita graphical browser** (browse + transfer) | ✅ **Done — v0.3.0** |
 | 3 | FUSE mount (Proton Drive as a disk) | ⏳ Planned |
 
 ## Architecture
@@ -72,6 +72,32 @@ protondisk ls /my-files
 
 If the `proton-drive` binary isn't found, ProtonDisk reports a clear error rather
 than a traceback.
+
+## Graphical browser (Milestone 2)
+
+The GUI needs **system** PyGObject/GTK4/libadwaita (not pip-installable in a plain
+venv), so it runs from a `--system-site-packages` virtualenv:
+
+```bash
+python3 -m venv --system-site-packages .venv-gui
+.venv-gui/bin/pip install -e '.[dev]'
+.venv-gui/bin/python -m protondisk.cli gui
+```
+
+Or just run the launcher (creates the venv on first run, always launches the
+latest source):
+
+```bash
+scripts/protondisk-gui
+```
+
+You can also install a desktop entry pointing `Exec=` at `scripts/protondisk-gui`
+and `Icon=` at `assets/protondisk.svg`.
+
+The window signs you in, browses **My files** (list view, breadcrumb,
+back/forward, refresh), and uploads/downloads files. The status bar shows a
+throbber and the live transfer phase (Encrypting / Uploading / Downloading /
+Decrypting / Finishing). Run GUI tests with `.venv-gui/bin/pytest`.
 
 ## Using the core from Python
 
