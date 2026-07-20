@@ -17,13 +17,9 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "gui-smoke.png"
 def _snapshot_and_quit(app):
     win = app.get_active_window()
     if win is not None:
-        paintable = Gtk.WidgetPaintable(widget=win)  # noqa: F841 (kept for clarity)
-        # Save via a snapshot: render the window to a texture.
-        width, height = win.get_width(), win.get_height()
-        if width > 0 and height > 0:
-            snapshot = Gtk.Snapshot()
-            win.do_snapshot(win, snapshot) if False else None
-    print(f"window present: {win is not None}; size={win.get_width()}x{win.get_height()}" if win else "no window")
+        print(f"window present: True; size={win.get_width()}x{win.get_height()}")
+    else:
+        print("no window")
     app.quit()
     return GLib.SOURCE_REMOVE
 

@@ -275,8 +275,12 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.add_response("ok", "OK")
         dialog.present()
         # never leave the user stranded on the loading spinner
-        self._stack.set_visible_child_name("browser" if self._store.get_n_items() else "signed_out")
+        self._stack.set_visible_child_name(self._recovery_view())
         return False
+
+    def _recovery_view(self) -> str:
+        # a signed-in user with an empty folder still belongs in the browser
+        return "browser" if (self._store.get_n_items() or self._account) else "signed_out"
 
     # ---- transfer seams (unit-tested) ----
     @staticmethod
@@ -299,6 +303,18 @@ class MainWindow(Adw.ApplicationWindow):
     def _toast(self, text: str) -> None:
         self._toasts.add_toast(Adw.Toast(title=text))
 
+    @staticmethod
+    def _is_dialog_cancel(exc) -> bool:
+        # a dismissed file dialog is a normal cancel, not an error to report
+        return (isinstance(exc, GLib.Error)
+                and exc.matches(Gtk.DialogError.quark(), Gtk.DialogError.DISMISSED))
+
+    @staticmethod
+    def _upload_result_message(name: str, result) -> str:
+        if result is not None and result.skipped_items and not result.transferred_items:
+            return f"Skipped {name} (already exists)"
+        return f"Uploaded {name}"
+
     def _on_upload_clicked(self, _btn) -> None:
         dialog = Gtk.FileDialog()
         dialog.open_multiple(self, None, self._on_upload_chosen)
@@ -306,21 +322,24 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_upload_chosen(self, dialog, result) -> None:
         try:
             files = dialog.open_multiple_finish(result)
-        except Exception:
-            return  # user cancelled
+        except GLib.Error as exc:
+            if not self._is_dialog_cancel(exc):
+                self._on_error(exc)
+            return
         locals_ = [f.get_path() for f in files if f.get_path()]
         for local in locals_:
             name = local.rsplit("/", 1)[-1]
             self._begin_activity(self._activity_text("upload", name))
             run_async(
                 lambda l=local, n=name: self._upload_one(l, progress=self._progress_cb(n)),
-                lambda _r, l=local: self._on_upload_done(l),
+                lambda r, l=local: self._on_upload_done(l, r),
                 self._on_transfer_error)
 
-    def _on_upload_done(self, local: str) -> None:
+    def _on_upload_done(self, local: str, result=None) -> None:
         self._end_activity()
-        self._toast(f"Uploaded {local.rsplit('/', 1)[-1]}")
-        self._reload(self._nav.refresh)
+        self._toast(self._upload_result_message(local.rsplit("/", 1)[-1], result))
+        if self._active_transfers == 0:  # refresh once, after the last upload finishes
+            self._reload(self._nav.refresh)
         return False
 
     def _on_transfer_error(self, exc) -> None:
@@ -340,8 +359,10 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_download_folder(self, dialog, result, remote_path: str) -> None:
         try:
             folder = dialog.select_folder_finish(result)
-        except Exception:
-            return  # cancelled
+        except GLib.Error as exc:
+            if not self._is_dialog_cancel(exc):
+                self._on_error(exc)
+            return
         target = folder.get_path()
         name = remote_path.rsplit("/", 1)[-1]
         self._begin_activity(self._activity_text("download", name))
