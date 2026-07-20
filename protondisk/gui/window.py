@@ -5,7 +5,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, Gio, GObject, GLib  # noqa: E402
+from gi.repository import Gtk, Adw, Gio, GObject, GLib, Gdk  # noqa: E402
 
 from .navigation import NavigationState
 from .worker import run_async
@@ -129,6 +129,11 @@ class MainWindow(Adw.ApplicationWindow):
             return "An item with that name already exists."
         return None
 
+    @staticmethod
+    def _rename_is_noop(old: str, new: str) -> bool:
+        new = new.strip()
+        return (not new) or new == old
+
     # ---- transfer activity indicator (throbber + phase in the status bar) ----
     def _begin_activity(self, text: str) -> None:
         self._active_transfers += 1
@@ -177,6 +182,26 @@ class MainWindow(Adw.ApplicationWindow):
         self._selection = Gtk.SingleSelection(model=self._store)
         self._list = Gtk.ListView(model=self._selection, factory=factory)
         self._list.connect("activate", self._on_row_activated)
+
+        menu = Gio.Menu()
+        menu.append("Rename", "row.rename")
+        menu.append("Move here" if False else "Move", "row.move")
+        menu.append("Trash", "row.trash")
+        menu.append("Share…", "row.share")
+        self._row_menu = Gtk.PopoverMenu.new_from_model(menu)
+        self._row_menu.set_parent(self._list)
+        self._row_menu.set_has_arrow(False)
+        gesture = Gtk.GestureClick(button=3)  # right-click
+        gesture.connect("pressed", self._on_row_right_click)
+        self._list.add_controller(gesture)
+        grp = Gio.SimpleActionGroup()
+        for name, cb in (("rename", self._act_rename), ("move", self._act_move),
+                         ("trash", self._act_trash), ("share", self._act_share)):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", cb)
+            grp.add_action(act)
+        self.insert_action_group("row", grp)
+
         scroller = Gtk.ScrolledWindow(child=self._list, vexpand=True)
         return scroller
 
@@ -340,6 +365,55 @@ class MainWindow(Adw.ApplicationWindow):
         if pos == Gtk.INVALID_LIST_POSITION:
             return None
         return self._store.get_item(pos)
+
+    # ---- row context menu (rename / move / trash / share) ----
+    def _on_row_right_click(self, gesture, n_press, x, y) -> None:
+        # select the row under the pointer, then pop the menu there
+        row_height = 34
+        index = int(y // row_height)
+        if 0 <= index < self._store.get_n_items():
+            self._selection.set_selected(index)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+        self._row_menu.set_pointing_to(rect)
+        self._row_menu.popup()
+
+    def _act_rename(self, _action, _param) -> None:
+        row = self._selected_row()
+        if row is not None:
+            self._prompt_rename(row)
+
+    def _act_move(self, _action, _param) -> None:
+        self._toast("Coming soon")
+
+    def _act_trash(self, _action, _param) -> None:
+        self._toast("Coming soon")
+
+    def _act_share(self, _action, _param) -> None:
+        self._toast("Coming soon")
+
+    def _prompt_rename(self, row) -> None:
+        dialog = Adw.MessageDialog(transient_for=self, heading=f"Rename “{row.name}”", body="")
+        entry = Gtk.Entry(text=row.name, activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("rename", "Rename")
+        dialog.set_default_response("rename")
+        dialog.set_response_appearance("rename", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(dlg, response):
+            if response != "rename":
+                return
+            new = entry.get_text().strip()
+            if self._rename_is_noop(row.name, new):
+                return
+            err = self._valid_new_name(new, [n for n in self._current_names() if n != row.name])
+            if err:
+                self._toast(err); return
+            run_async(lambda: self._disk.rename(row.path, new),
+                      lambda _r: self._reload(self._nav.refresh), self._on_error)
+        dialog.connect("response", on_response)
+        dialog.present()
 
     # ---- transfer handlers ----
     def _toast(self, text: str) -> None:
