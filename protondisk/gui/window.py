@@ -429,8 +429,32 @@ class MainWindow(Adw.ApplicationWindow):
         self._reload(self._nav.refresh)
         return False
 
+    @staticmethod
+    def _trash_confirm_text(name: str) -> str:
+        return f"Move “{name}” to trash?"
+
     def _act_trash(self, _action, _param) -> None:
-        self._toast("Coming soon")
+        row = self._selected_row()
+        if row is None:
+            return
+        dialog = Adw.MessageDialog(transient_for=self,
+                                   heading=self._trash_confirm_text(row.name), body="")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("trash", "Move to Trash")
+        dialog.set_response_appearance("trash", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def on_response(dlg, response, path=row.path, name=row.name):
+            if response != "trash":
+                return
+            run_async(lambda: self._disk.trash(path),
+                      lambda _r: self._after_trash(name), self._on_error)
+        dialog.connect("response", on_response)
+        dialog.present()
+
+    def _after_trash(self, name: str) -> None:
+        self._toast(f"Moved {name} to trash")
+        self._reload(self._nav.refresh)
+        return False
 
     def _act_share(self, _action, _param) -> None:
         self._toast("Coming soon")
