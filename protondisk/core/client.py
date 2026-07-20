@@ -61,3 +61,16 @@ class ProtonDisk:
 
     def trash(self, path: str) -> None:
         self._runner.run("filesystem", "trash", path)
+
+    # --- sharing ---
+    def sharing_status(self, path: str) -> ShareInfo:
+        data = self._runner.run("sharing", "status", path)
+        return ShareInfo.from_json(data, path=path)
+
+    def sharing_invite(self, path: str, user: str, role: str = "viewer",
+                       message: str = "") -> None:
+        args = ["sharing", "invite", "--user", user, "--role", role]
+        if message:
+            args += ["--message", message]
+        args.append(path)
+        self._runner.run(*args)
