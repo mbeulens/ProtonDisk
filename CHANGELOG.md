@@ -7,6 +7,35 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [0.4.0] — 2026-07-20
+
+GUI increment 2: **file management and sharing** in the graphical browser.
+
+### Added
+- **New Folder** — a header button with a validated name dialog.
+- **Row context menu** (right-click) with Rename / Move / Trash / Share, targeting the
+  exact row under the pointer.
+- **Rename** — inline name dialog.
+- **Move** — cut an item, navigate to a destination folder, and Paste (guards against
+  moving a folder into itself or its own parent).
+- **Trash** — with a destructive confirmation dialog.
+- **Share** — a dialog showing the current sharing status plus invite by email and role
+  (viewer / editor / admin).
+
+### Fixed
+- Right-click now acts on the exact row under the pointer (previously a fragile
+  row-height estimate could target the wrong file when the list was scrolled).
+- Paste captures its destination at click time, so navigating during an in-flight move
+  can no longer move the item to the wrong folder.
+- File-dialog errors are surfaced (previously any dialog error was treated as a cancel);
+  uploads refresh once after the last file; a skipped upload toasts honestly; a signed-in
+  user with an empty folder no longer falls back to the sign-in screen on an error.
+
+### Notes
+- Sharing shows status and sends invites; the `sharing status` JSON shape for an
+  already-shared node is still a best-effort parse pending a live capture.
+- Drag-and-drop, grid view, thumbnails, and public share links remain out of scope.
+
 ## [0.3.0] — 2026-07-20
 
 Second milestone (first increment): **the GTK4 + libadwaita graphical browser**,

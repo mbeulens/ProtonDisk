@@ -17,7 +17,7 @@ lacks: a **mountable disk** and a **graphical browser**.
 | Milestone | Feature | State |
 |-----------|---------|-------|
 | **1** | **Core CLI wrapper** (`protondisk.core`) | ✅ **Done — v0.2.0** |
-| **2** | **GTK4 + libadwaita graphical browser** (browse + transfer) | ✅ **Done — v0.3.0** |
+| **2** | **GTK4 + libadwaita graphical browser** (browse, transfer, organize, sharing) | ✅ **Done — v0.4.0** |
 | 3 | FUSE mount (Proton Drive as a disk) | ⏳ Planned |
 
 ## Architecture
@@ -97,7 +97,9 @@ and `Icon=` at `assets/protondisk.svg`.
 The window signs you in, browses **My files** (list view, breadcrumb,
 back/forward, refresh), and uploads/downloads files. The status bar shows a
 throbber and the live transfer phase (Encrypting / Uploading / Downloading /
-Decrypting / Finishing). Run GUI tests with `.venv-gui/bin/pytest`.
+Decrypting / Finishing). Right-click a row to **rename, move (cut → Paste),
+trash, or share** it, and use **New Folder** in the header. Run GUI tests with
+`.venv-gui/bin/pytest`.
 
 ## Using the core from Python
 
