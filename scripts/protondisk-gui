@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launch the ProtonDisk GTK4 GUI.
+#
+# Uses the GTK-capable virtualenv (.venv-gui, system-site-packages so it can see
+# the system PyGObject/GTK4/libadwaita), creating it on first run. Because the
+# package is installed editable (`pip install -e .`), this always launches the
+# CURRENT source in this checkout — i.e. the latest ProtonDisk.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+VENV="$REPO/.venv-gui"
+
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "ProtonDisk: setting up the GUI environment (first run only)…" >&2
+    python3 -m venv --system-site-packages "$VENV"
+    "$VENV/bin/pip" install -q -e "$REPO"
+fi
+
+exec "$VENV/bin/python" -m protondisk.cli gui "$@"
