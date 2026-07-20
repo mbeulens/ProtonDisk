@@ -26,3 +26,14 @@ class ProtonDisk:
 
     def logout(self) -> None:
         self._runner.run("auth", "logout")
+
+    # --- browsing ---
+    def list(self, path: str) -> list[Entry]:
+        data = self._runner.run("filesystem", "list", path)
+        if not isinstance(data, list):
+            return []
+        return [Entry.from_json(item, parent=path) for item in data]
+
+    def stat(self, path: str) -> Entry:
+        data = self._runner.run("filesystem", "info", path)
+        return Entry.from_json(data, path=path)
