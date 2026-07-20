@@ -32,6 +32,7 @@ class MainWindow(Adw.ApplicationWindow):
         super().__init__(application=application)
         self._disk = disk
         self._nav = NavigationState(disk)
+        self._load_gen = 0
         self._account = None
         self.set_title("ProtonDisk")
         self.set_default_size(900, 600)
@@ -160,16 +161,24 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.set_visible_child_name("loading")
         run_async(self._disk.login, lambda _r: self._check_auth(), self._on_error)
 
-    def _load_current(self) -> None:
+    def _reload(self, func) -> None:
         self._stack.set_visible_child_name("loading")
-        run_async(self._nav.entries, self._on_entries_loaded, self._on_error)
+        self._load_gen += 1
+        gen = self._load_gen
+        run_async(func,
+                  lambda entries: self._on_entries_loaded(entries, gen),
+                  lambda exc: self._on_error(exc, gen))
 
-    def _on_entries_loaded(self, entries) -> None:
+    def _load_current(self) -> None:
+        self._reload(self._nav.entries)
+
+    def _on_entries_loaded(self, entries, gen) -> None:
+        if gen != self._load_gen:
+            return False  # stale response; a newer navigation superseded it
         self._store.remove_all()
         for entry in entries:
-            path = f"{self._nav.current.rstrip('/')}/{entry.name}"
             size = entry.size if entry.size is not None else -1
-            self._store.append(_Row(entry.name, entry.is_dir, path, size))
+            self._store.append(_Row(entry.name, entry.is_dir, entry.path, size))
         self._title.set_title(self._nav.current)
         self._rebuild_breadcrumbs()
         self._update_nav_sensitivity()
@@ -217,14 +226,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._load_current()
 
     def _on_refresh(self, _btn) -> None:
-        self._stack.set_visible_child_name("loading")
-        run_async(self._nav.refresh, self._on_entries_loaded, self._on_error)
+        self._reload(self._nav.refresh)
 
-    def _on_error(self, exc) -> None:
+    def _on_error(self, exc, gen=None) -> None:
+        if gen is not None and gen != self._load_gen:
+            return False  # a newer load superseded this one
         message = str(exc) if isinstance(exc, ProtonDiskError) else f"Unexpected error: {exc}"
         dialog = Adw.MessageDialog(transient_for=self, heading="Error", body=message)
         dialog.add_response("ok", "OK")
         dialog.present()
+        # never leave the user stranded on the loading spinner
+        self._stack.set_visible_child_name("browser" if self._store.get_n_items() else "signed_out")
         return False
 
     # ---- transfer seams (unit-tested) ----
@@ -264,8 +276,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_upload_done(self, local: str) -> None:
         self._toast(f"Uploaded {local.rsplit('/', 1)[-1]}")
-        self._stack.set_visible_child_name("loading")
-        run_async(self._nav.refresh, self._on_entries_loaded, self._on_error)
+        self._reload(self._nav.refresh)
         return False
 
     def _on_download_clicked(self, _btn) -> None:
