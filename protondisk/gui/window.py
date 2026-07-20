@@ -39,12 +39,18 @@ class MainWindow(Adw.ApplicationWindow):
         self._back_btn = Gtk.Button(icon_name="go-previous-symbolic", sensitive=False)
         self._fwd_btn = Gtk.Button(icon_name="go-next-symbolic", sensitive=False)
         self._refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        self._upload_btn = Gtk.Button(icon_name="document-send-symbolic")
+        self._download_btn = Gtk.Button(icon_name="folder-download-symbolic")
         self._back_btn.connect("clicked", self._on_back)
         self._fwd_btn.connect("clicked", self._on_forward)
         self._refresh_btn.connect("clicked", self._on_refresh)
+        self._upload_btn.connect("clicked", self._on_upload_clicked)
+        self._download_btn.connect("clicked", self._on_download_clicked)
         self._header.pack_start(self._back_btn)
         self._header.pack_start(self._fwd_btn)
         self._header.pack_end(self._refresh_btn)
+        self._header.pack_end(self._upload_btn)
+        self._header.pack_end(self._download_btn)
         self._toolbar.add_top_bar(self._header)
 
         self._breadcrumb_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4,
@@ -56,7 +62,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._build_signed_out_view(), "signed_out")
         self._stack.add_named(self._build_browser_view(), "browser")
         self._stack.add_named(self._build_loading_view(), "loading")
-        self._toolbar.set_content(self._stack)
+        self._toasts = Adw.ToastOverlay(child=self._stack)
+        self._toolbar.set_content(self._toasts)
         self.set_content(self._toolbar)
 
         self._stack.set_visible_child_name("loading")
@@ -196,4 +203,67 @@ class MainWindow(Adw.ApplicationWindow):
         dialog = Adw.MessageDialog(transient_for=self, heading="Error", body=message)
         dialog.add_response("ok", "OK")
         dialog.present()
+        return False
+
+    # ---- transfer seams (unit-tested) ----
+    @staticmethod
+    def _can_download(row_is_dir) -> bool:
+        return row_is_dir is False  # True only for a selected file
+
+    def _upload_one(self, local: str):
+        return self._disk.upload(local, self._nav.current, conflict="skip")
+
+    def _download_one(self, remote: str, folder: str):
+        return self._disk.download(remote, folder)
+
+    def _selected_row(self):
+        pos = self._selection.get_selected()
+        if pos == Gtk.INVALID_LIST_POSITION:
+            return None
+        return self._store.get_item(pos)
+
+    # ---- transfer handlers ----
+    def _toast(self, text: str) -> None:
+        self._toasts.add_toast(Adw.Toast(title=text))
+
+    def _on_upload_clicked(self, _btn) -> None:
+        dialog = Gtk.FileDialog()
+        dialog.open_multiple(self, None, self._on_upload_chosen)
+
+    def _on_upload_chosen(self, dialog, result) -> None:
+        try:
+            files = dialog.open_multiple_finish(result)
+        except Exception:
+            return  # user cancelled
+        locals_ = [f.get_path() for f in files if f.get_path()]
+        for local in locals_:
+            run_async(lambda l=local: self._upload_one(l),
+                      lambda _r, l=local: self._on_upload_done(l), self._on_error)
+
+    def _on_upload_done(self, local: str) -> None:
+        self._toast(f"Uploaded {local.rsplit('/', 1)[-1]}")
+        self._stack.set_visible_child_name("loading")
+        run_async(self._nav.refresh, self._on_entries_loaded, self._on_error)
+        return False
+
+    def _on_download_clicked(self, _btn) -> None:
+        row = self._selected_row()
+        if not self._can_download(getattr(row, "is_dir", None)):
+            self._toast("Select a file to download")
+            return
+        dialog = Gtk.FileDialog()
+        dialog.select_folder(self, None,
+                             lambda d, r, path=row.path: self._on_download_folder(d, r, path))
+
+    def _on_download_folder(self, dialog, result, remote_path: str) -> None:
+        try:
+            folder = dialog.select_folder_finish(result)
+        except Exception:
+            return  # cancelled
+        target = folder.get_path()
+        run_async(lambda: self._download_one(remote_path, target),
+                  lambda _r: self._on_download_done(remote_path), self._on_error)
+
+    def _on_download_done(self, remote_path: str) -> None:
+        self._toast(f"Downloaded {remote_path.rsplit('/', 1)[-1]}")
         return False
