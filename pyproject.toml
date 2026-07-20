@@ -1,0 +1,25 @@
+[project]
+name = "protondisk"
+description = "Use Proton Drive as a mounted disk and graphical browser on Linux"
+readme = "README.md"
+requires-python = ">=3.12"
+dynamic = ["version"]
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PyGObject"]
+mount = ["pyfuse3"]
+dev = ["pytest"]
+
+[project.scripts]
+protondisk = "protondisk.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { file = "VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["protondisk*"]
