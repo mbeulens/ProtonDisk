@@ -37,3 +37,13 @@ class ProtonDisk:
     def stat(self, path: str) -> Entry:
         data = self._runner.run("filesystem", "info", path)
         return Entry.from_json(data, path=path)
+
+    # --- transfer ---
+    def upload(self, local: str, parent: str, *, conflict: str = "skip") -> TransferResult:
+        data = self._runner.run(
+            "filesystem", "upload", "--conflict-strategy", conflict, local, parent)
+        return TransferResult.from_json(data)
+
+    def download(self, remote: str, local_folder: str) -> TransferResult:
+        data = self._runner.run("filesystem", "download", remote, local_folder)
+        return TransferResult.from_json(data)
