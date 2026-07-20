@@ -25,7 +25,10 @@ class ProtonDiskFS(Operations):
     def _listing(self, proton_dir: str):
         cached = self._cache.get(proton_dir)
         if cached is None:
-            cached = self._disk.list(proton_dir)
+            try:
+                cached = self._disk.list(proton_dir)
+            except ProtonDiskError:
+                raise FuseOSError(errno.EIO)  # a Drive/network error, not "bad argument"
             self._cache.put(proton_dir, cached)
         return cached
 
@@ -65,11 +68,13 @@ class ProtonDiskFS(Operations):
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
         try:
             self._disk.download(proton_path(path), tmpdir)
-        except ProtonDiskError:
+            local = os.path.join(tmpdir, os.path.basename(path))
+            fobj = open(local, "rb")
+        except (ProtonDiskError, OSError):
+            # download failed, or it "succeeded" without producing the file:
+            # clean up the temp dir so it can't leak, and report an I/O error.
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise FuseOSError(errno.EIO)
-        local = os.path.join(tmpdir, os.path.basename(path))
-        fobj = open(local, "rb")
         fh = self._next_fh
         self._next_fh += 1
         self._open_files[fh] = (tmpdir, fobj)

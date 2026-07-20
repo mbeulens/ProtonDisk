@@ -60,3 +60,20 @@ def test_open_download_failure_is_eio():
     with pytest.raises(FuseOSError) as ei:
         fs.open("/a.txt", os.O_RDONLY)
     assert ei.value.errno == errno.EIO
+
+
+def test_open_empty_download_cleans_up_and_eio(tmp_path):
+    # download "succeeds" but writes no file -> EIO and no leaked temp dir.
+    import errno as _errno, glob, tempfile
+
+    class SilentDisk(FakeDisk):
+        def download(self, remote, folder):
+            self.downloads.append((remote, folder))  # writes nothing
+
+    fs = ProtonDiskFS(SilentDisk())
+    before = set(glob.glob(tempfile.gettempdir() + "/protondisk-mnt-*"))
+    with pytest.raises(FuseOSError) as ei:
+        fs.open("/a.txt", os.O_RDONLY)
+    assert ei.value.errno == _errno.EIO
+    after = set(glob.glob(tempfile.gettempdir() + "/protondisk-mnt-*"))
+    assert after == before  # no temp dir leaked

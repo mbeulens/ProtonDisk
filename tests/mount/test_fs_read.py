@@ -64,3 +64,18 @@ def test_readonly_ops_raise_erofs():
         with pytest.raises(FuseOSError) as ei:
             call()
         assert ei.value.errno == errno.EROFS
+
+
+def test_listing_error_maps_to_eio():
+    # A Drive/network error during list must surface as EIO, not a raw exception.
+    import errno as _errno
+    from protondisk.core.errors import RateLimitError
+
+    class ThrottledDisk:
+        def list(self, path):
+            raise RateLimitError("Too many requests")
+
+    fs = ProtonDiskFS(ThrottledDisk())
+    with pytest.raises(FuseOSError) as ei:
+        fs.readdir("/", None)
+    assert ei.value.errno == _errno.EIO
