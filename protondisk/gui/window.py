@@ -456,8 +456,54 @@ class MainWindow(Adw.ApplicationWindow):
         self._reload(self._nav.refresh)
         return False
 
+    @staticmethod
+    def _valid_email(email: str) -> bool:
+        email = email.strip()
+        if "@" not in email:
+            return False
+        local, _, domain = email.partition("@")
+        return bool(local) and "." in domain and not domain.endswith(".")
+
+    @staticmethod
+    def _share_summary(info) -> str:
+        if not info.shared:
+            return "Not shared"
+        n = len(info.members)
+        return f"Shared with {n} {'person' if n == 1 else 'people'}"
+
     def _act_share(self, _action, _param) -> None:
-        self._toast("Coming soon")
+        row = self._selected_row()
+        if row is None:
+            return
+        run_async(lambda: self._disk.sharing_status(row.path),
+                  lambda info, r=row: self._open_share_dialog(r, info), self._on_error)
+
+    def _open_share_dialog(self, row, info) -> None:
+        dialog = Adw.MessageDialog(transient_for=self, heading=f"Share “{row.name}”",
+                                   body=self._share_summary(info))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        email = Gtk.Entry(placeholder_text="colleague@example.com")
+        roles = Gtk.StringList.new(["viewer", "editor", "admin"])
+        role_dd = Gtk.DropDown(model=roles)
+        box.append(email)
+        box.append(role_dd)
+        dialog.set_extra_child(box)
+        dialog.add_response("close", "Close")
+        dialog.add_response("invite", "Invite")
+        dialog.set_default_response("invite")
+        dialog.set_response_appearance("invite", Adw.ResponseAppearance.SUGGESTED)
+
+        def on_response(dlg, response, path=row.path):
+            if response != "invite":
+                return
+            addr = email.get_text().strip()
+            if not self._valid_email(addr):
+                self._toast("Enter a valid email address."); return
+            role = ["viewer", "editor", "admin"][role_dd.get_selected()]
+            run_async(lambda: self._disk.sharing_invite(path, addr, role),
+                      lambda _r, a=addr: self._toast(f"Invited {a}"), self._on_error)
+        dialog.connect("response", on_response)
+        dialog.present()
 
     def _prompt_rename(self, row) -> None:
         dialog = Adw.MessageDialog(transient_for=self, heading=f"Rename “{row.name}”", body="")
