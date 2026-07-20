@@ -185,15 +185,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         menu = Gio.Menu()
         menu.append("Rename", "row.rename")
-        menu.append("Move here" if False else "Move", "row.move")
+        menu.append("Move", "row.move")
         menu.append("Trash", "row.trash")
         menu.append("Share…", "row.share")
         self._row_menu = Gtk.PopoverMenu.new_from_model(menu)
         self._row_menu.set_parent(self._list)
         self._row_menu.set_has_arrow(False)
-        gesture = Gtk.GestureClick(button=3)  # right-click
-        gesture.connect("pressed", self._on_row_right_click)
-        self._list.add_controller(gesture)
         grp = Gio.SimpleActionGroup()
         for name, cb in (("rename", self._act_rename), ("move", self._act_move),
                          ("trash", self._act_trash), ("share", self._act_share)):
@@ -211,7 +208,24 @@ class MainWindow(Adw.ApplicationWindow):
         name = Gtk.Label(xalign=0, hexpand=True)
         box.append(name)
         box.append(Gtk.Label(xalign=1))  # size
+        # right-click on this row opens the context menu for THIS item (robust to
+        # scrolling / row height — no positional guessing)
+        gesture = Gtk.GestureClick(button=3)
+        gesture.connect("pressed", self._on_row_menu, list_item)
+        box.add_controller(gesture)
         list_item.set_child(box)
+
+    def _on_row_menu(self, gesture, n_press, x, y, list_item) -> None:
+        pos = list_item.get_position()
+        if pos == Gtk.INVALID_LIST_POSITION:
+            return
+        self._selection.set_selected(pos)  # act on the row actually clicked
+        box = list_item.get_child()
+        ok, tx, ty = box.translate_coordinates(self._list, x, y)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(tx), int(ty), 1, 1
+        self._row_menu.set_pointing_to(rect)
+        self._row_menu.popup()
 
     def _on_row_bind(self, _factory, list_item) -> None:
         row = list_item.get_item()
@@ -367,17 +381,6 @@ class MainWindow(Adw.ApplicationWindow):
         return self._store.get_item(pos)
 
     # ---- row context menu (rename / move / trash / share) ----
-    def _on_row_right_click(self, gesture, n_press, x, y) -> None:
-        # select the row under the pointer, then pop the menu there
-        row_height = 34
-        index = int(y // row_height)
-        if 0 <= index < self._store.get_n_items():
-            self._selection.set_selected(index)
-        rect = Gdk.Rectangle()
-        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
-        self._row_menu.set_pointing_to(rect)
-        self._row_menu.popup()
-
     def _act_rename(self, _action, _param) -> None:
         row = self._selected_row()
         if row is not None:
