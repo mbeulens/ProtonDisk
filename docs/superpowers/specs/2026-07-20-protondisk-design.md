@@ -269,3 +269,39 @@ v1 deliberately **excludes** (matching the official CLI's own "what comes next" 
 - Multi-account support.
 
 These can be added later as minor bumps once the three core milestones are solid.
+
+## 12. CLI Reconciliation (post-login findings)
+
+After installing `proton-drive` (`cli-drive@0.5.0`, SDK `js@0.19.1`) and capturing real
+`--json` output from a logged-in session, the following supersede the earlier assumptions
+in sections 4–6. The core is designed around these confirmed facts:
+
+- **No `auth status` command.** `auth_status()` is implemented as a probe: call
+  `filesystem info /my-files`; on `AuthError` → logged out; otherwise logged in, and the
+  account email is read from `ownedBy.email`.
+- **`list` returns a top-level JSON array** (no `items` key). `list /` returns section
+  stubs `{"path": "/my-files"}`; `list /my-files` returns full node objects.
+- **Node object shape:** `uid`, `parentUid`, `name` is a Result wrapper
+  `{"ok": bool, "value": str}` (may be `ok:false` when undecryptable), `type`
+  (`file`|`folder`), `totalStorageSize` (files), `modificationTime`/`creationTime` as **ISO
+  8601 strings**, `ownedBy.email`, `isShared`, `activeRevision` (files). **No `path` field**
+  — paths are derived from the parent path + decrypted name.
+- **`Entry` fields become** `name, path, is_dir, size, mtime (epoch float), uid` (the id is
+  `uid`, not `id`).
+- **`stat()` uses `filesystem info path`** (a real command) rather than parent-listing.
+- **Organize commands differ:** `mkdir(path)` → `filesystem create-folder parentPath name`
+  (path is split); a dedicated `rename(path, newName)` → `filesystem rename`; `move(src,
+  targetParent)` → `filesystem move` moves into a **target parent folder** (not a full new
+  path). `move`/`trash` return `[{"uid", "ok"}]` arrays.
+- **`TransferResult` fields become** `transferred_items, transferred_bytes, skipped_items,
+  failed_items, failures` (from `filesystem upload`/`download` JSON). Upload requires a
+  conflict strategy for non-interactive use: `-c/--conflict-strategy` ∈
+  `merge|keep-both|replace|skip`.
+- **`sharing invite`** flags: `-u/--user` (repeatable), `-r/--role` ∈
+  `viewer|editor|admin|inherited` (CLI default `viewer`; ProtonDisk defaults to `viewer` for
+  least privilege), `-m/--message`. The path is the final positional.
+- **`sharing status`** prints literal `undefined` (not JSON) with exit 0 for an unshared
+  node → parsed as "not shared". It can also error on nodes whose share keys don't decrypt.
+- **Error contract:** non-zero exit (1) with a plain-text message on **stderr** (e.g.
+  `You need to login first`); some commands emit non-JSON tokens (`undefined`) on stdout with
+  exit 0. `CLIRunner` treats empty/`undefined` stdout as `{}` and classifies stderr text.
