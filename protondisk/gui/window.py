@@ -34,6 +34,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._nav = NavigationState(disk)
         self._load_gen = 0
         self._account = None
+        self._cut = None
         self.set_title("ProtonDisk")
         self.set_default_size(900, 600)
 
@@ -52,15 +53,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._download_btn.set_tooltip_text("Download the selected file")
         self._newfolder_btn = Gtk.Button(icon_name="folder-new-symbolic")
         self._newfolder_btn.set_tooltip_text("New folder")
+        self._paste_btn = Gtk.Button(icon_name="edit-paste-symbolic", visible=False)
+        self._paste_btn.set_tooltip_text("Move the cut item here")
         self._back_btn.connect("clicked", self._on_back)
         self._fwd_btn.connect("clicked", self._on_forward)
         self._refresh_btn.connect("clicked", self._on_refresh)
         self._upload_btn.connect("clicked", self._on_upload_clicked)
         self._download_btn.connect("clicked", self._on_download_clicked)
         self._newfolder_btn.connect("clicked", lambda _b: self._prompt_new_folder())
+        self._paste_btn.connect("clicked", self._on_paste)
         self._header.pack_start(self._back_btn)
         self._header.pack_start(self._fwd_btn)
         self._header.pack_start(self._newfolder_btn)
+        self._header.pack_start(self._paste_btn)
         self._header.pack_end(self._refresh_btn)
         self._header.pack_end(self._upload_btn)
         self._header.pack_end(self._download_btn)
@@ -277,6 +282,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_nav_sensitivity()
         self._status.set_label(self._status_text(len(self._store), self._account))
         self._stack.set_visible_child_name("browser")
+        self._update_paste_sensitivity()
         return False
 
     def _on_row_activated(self, _list, position) -> None:
@@ -387,7 +393,41 @@ class MainWindow(Adw.ApplicationWindow):
             self._prompt_rename(row)
 
     def _act_move(self, _action, _param) -> None:
-        self._toast("Coming soon")
+        row = self._selected_row()
+        if row is None:
+            return
+        self._cut = row.path
+        self._toast(f"Cut {row.name} — open a folder and press Paste")
+        self._update_paste_sensitivity()
+
+    @staticmethod
+    def _can_paste_into(cut_path: str, current: str) -> bool:
+        if not cut_path:
+            return False
+        parent = cut_path.rsplit("/", 1)[0] or "/"
+        if current == parent:
+            return False
+        if current == cut_path or current.startswith(cut_path.rstrip("/") + "/"):
+            return False
+        return True
+
+    def _update_paste_sensitivity(self) -> None:
+        can = self._can_paste_into(self._cut or "", self._nav.current)
+        self._paste_btn.set_visible(bool(self._cut))
+        self._paste_btn.set_sensitive(can)
+
+    def _on_paste(self, _btn) -> None:
+        if not self._can_paste_into(self._cut or "", self._nav.current):
+            return
+        src = self._cut
+        run_async(lambda: self._disk.move(src, self._nav.current),
+                  lambda _r: self._after_paste(), self._on_error)
+
+    def _after_paste(self) -> None:
+        self._cut = None
+        self._paste_btn.set_visible(False)
+        self._reload(self._nav.refresh)
+        return False
 
     def _act_trash(self, _action, _param) -> None:
         self._toast("Coming soon")
