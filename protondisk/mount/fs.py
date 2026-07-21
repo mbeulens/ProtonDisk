@@ -11,13 +11,15 @@ from fuse import FuseOSError, Operations
 
 from protondisk.core.errors import ProtonDiskError
 from .cache import ListingCache
+from .notify import Notifier
 from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
 
 
 class ProtonDiskFS(Operations):
-    def __init__(self, disk, ttl: float = 5.0) -> None:
+    def __init__(self, disk, ttl: float = 5.0, notifier=None) -> None:
         self._disk = disk
         self._cache = ListingCache(ttl=ttl)
+        self._notifier = notifier or Notifier(enabled=False)
         self._open_files: dict[int, tuple] = {}
         self._next_fh = 1
 
@@ -66,15 +68,21 @@ class ProtonDiskFS(Operations):
         if entry.is_dir:
             raise FuseOSError(errno.EISDIR)
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
+        name = os.path.basename(path)
+        note = self._notifier.begin(f"Opening {name}…")
         try:
-            self._disk.download(proton_path(path), tmpdir)
-            local = os.path.join(tmpdir, os.path.basename(path))
+            self._disk.download(
+                proton_path(path), tmpdir,
+                progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
+            local = os.path.join(tmpdir, name)
             fobj = open(local, "rb")
         except (ProtonDiskError, OSError):
             # download failed, or it "succeeded" without producing the file:
             # clean up the temp dir so it can't leak, and report an I/O error.
+            self._notifier.finish(note, f"Failed: {name}")
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise FuseOSError(errno.EIO)
+        self._notifier.finish(note, f"Ready: {name}")
         fh = self._next_fh
         self._next_fh += 1
         self._open_files[fh] = (tmpdir, fobj)

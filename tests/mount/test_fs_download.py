@@ -19,7 +19,7 @@ class FakeDisk:
     def list(self, path):
         return self._tree.get(path, [])
 
-    def download(self, remote, folder):
+    def download(self, remote, folder, progress=None):
         self.downloads.append((remote, folder))
         with open(os.path.join(folder, os.path.basename(remote)), "wb") as f:
             f.write(self._contents)
@@ -54,7 +54,7 @@ def test_open_directory_is_eisdir():
 
 def test_open_download_failure_is_eio():
     class BadDisk(FakeDisk):
-        def download(self, remote, folder):
+        def download(self, remote, folder, progress=None):
             raise NotFoundError("gone")
     fs = ProtonDiskFS(BadDisk())
     with pytest.raises(FuseOSError) as ei:
@@ -67,7 +67,7 @@ def test_open_empty_download_cleans_up_and_eio(tmp_path):
     import errno as _errno, glob, tempfile
 
     class SilentDisk(FakeDisk):
-        def download(self, remote, folder):
+        def download(self, remote, folder, progress=None):
             self.downloads.append((remote, folder))  # writes nothing
 
     fs = ProtonDiskFS(SilentDisk())
