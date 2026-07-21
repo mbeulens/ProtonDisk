@@ -29,20 +29,24 @@ def test_open_read_release_round_trip():
     disk = FakeDisk(b"hello proton")
     fs = ProtonDiskFS(disk)
     fh = fs.open("/a.txt", os.O_RDONLY)
-    assert disk.downloads == [("/my-files/a.txt", fs._open_files[fh][0])]
+    assert disk.downloads == [("/my-files/a.txt", fs._open_files[fh].tmpdir)]
     assert fs.read("/a.txt", 5, 0, fh) == b"hello"
     assert fs.read("/a.txt", 100, 6, fh) == b"proton"
-    tmpdir = fs._open_files[fh][0]
+    tmpdir = fs._open_files[fh].tmpdir
     fs.release("/a.txt", fh)
     assert fh not in fs._open_files
     assert not os.path.exists(tmpdir)   # temp cleaned up
 
 
-def test_open_write_flag_is_erofs():
-    fs = ProtonDiskFS(FakeDisk())
-    with pytest.raises(FuseOSError) as ei:
-        fs.open("/a.txt", os.O_WRONLY)
-    assert ei.value.errno == errno.EROFS
+def test_open_write_flag_downloads_existing_bytes_into_writable_handle():
+    # Milestone 3b: write intent is now real (no longer EROFS) — opening an
+    # existing file for write (without O_TRUNC) preserves its bytes for edits.
+    disk = FakeDisk(b"hello proton")
+    fs = ProtonDiskFS(disk)
+    fh = fs.open("/a.txt", os.O_WRONLY)
+    assert disk.downloads == [("/my-files/a.txt", fs._open_files[fh].tmpdir)]
+    assert fs.read("/a.txt", 5, 0, fh) == b"hello"
+    fs.release("/a.txt", fh)
 
 
 def test_open_directory_is_eisdir():

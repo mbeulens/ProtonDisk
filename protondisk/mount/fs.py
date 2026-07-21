@@ -4,6 +4,7 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat as stat_mod
 import tempfile
 import time
 
@@ -15,12 +16,27 @@ from .notify import Notifier
 from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
 
 
+class _Handle:
+    __slots__ = ("tmpdir", "fobj", "path", "writable", "dirty")
+
+    def __init__(self, tmpdir, fobj, path, writable):
+        self.tmpdir = tmpdir
+        self.fobj = fobj
+        self.path = path
+        self.writable = writable
+        self.dirty = False
+
+    def local(self):
+        return os.path.join(self.tmpdir, os.path.basename(self.path))
+
+
 class ProtonDiskFS(Operations):
     def __init__(self, disk, ttl: float = 5.0, notifier=None) -> None:
         self._disk = disk
         self._cache = ListingCache(ttl=ttl)
         self._notifier = notifier or Notifier(enabled=False)
-        self._open_files: dict[int, tuple] = {}
+        self._open_files: dict[int, _Handle] = {}
+        self._write_handles: dict[str, _Handle] = {}
         self._next_fh = 1
 
     # ---- internals ----
@@ -45,6 +61,17 @@ class ProtonDiskFS(Operations):
     def getattr(self, path, fh=None):
         if path == "/":
             return root_stat_dict(time.time())
+        h = self._write_handles.get(path)
+        if h is not None:
+            h.fobj.flush()
+            info = os.stat(h.local())
+            now = time.time()
+            return {
+                "st_mode": stat_mod.S_IFREG | 0o644, "st_nlink": 1,
+                "st_size": info.st_size, "st_mtime": info.st_mtime,
+                "st_ctime": info.st_mtime, "st_atime": now,
+                "st_uid": os.getuid(), "st_gid": os.getgid(),
+            }
         entry = self._find_entry(path)
         if entry is None:
             raise FuseOSError(errno.ENOENT)
@@ -58,52 +85,146 @@ class ProtonDiskFS(Operations):
         return {"f_bsize": 4096, "f_frsize": 4096, "f_blocks": 0, "f_bfree": 0,
                 "f_bavail": 0, "f_files": 0, "f_ffree": 0, "f_namemax": 255}
 
-    # ---- download-on-open ----
+    # ---- handle registry ----
+    def _register(self, tmpdir, fobj, path, writable) -> int:
+        h = _Handle(tmpdir, fobj, path, writable)
+        fh = self._next_fh
+        self._next_fh += 1
+        self._open_files[fh] = h
+        if writable:
+            self._write_handles[path] = h
+        return fh
+
+    # ---- open / read / write / truncate ----
     def open(self, path, flags):
-        if is_write_flags(flags):
-            raise FuseOSError(errno.EROFS)
+        writable = is_write_flags(flags)
+        entry = self._find_entry(path)
+        name = os.path.basename(path)
+        if not writable:
+            if entry is None:
+                raise FuseOSError(errno.ENOENT)
+            if entry.is_dir:
+                raise FuseOSError(errno.EISDIR)
+            tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
+            note = self._notifier.begin(f"Opening {name}…")
+            try:
+                self._disk.download(
+                    proton_path(path), tmpdir,
+                    progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
+                fobj = open(os.path.join(tmpdir, name), "rb")
+            except (ProtonDiskError, OSError):
+                self._notifier.finish(note, f"Failed: {name}")
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                raise FuseOSError(errno.EIO)
+            self._notifier.finish(note, f"Ready: {name}")
+            return self._register(tmpdir, fobj, path, writable=False)
+        # write intent
+        if entry is not None and entry.is_dir:
+            raise FuseOSError(errno.EISDIR)
+        tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
+        local = os.path.join(tmpdir, name)
+        try:
+            if entry is not None and not (flags & os.O_TRUNC):
+                self._disk.download(proton_path(path), tmpdir)  # keep existing bytes
+                fobj = open(local, "r+b")
+            else:
+                fobj = open(local, "w+b")
+        except (ProtonDiskError, OSError):
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise FuseOSError(errno.EIO)
+        return self._register(tmpdir, fobj, path, writable=True)
+
+    def create(self, path, mode, fi=None):
+        tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
+        fobj = open(os.path.join(tmpdir, os.path.basename(path)), "w+b")
+        return self._register(tmpdir, fobj, path, writable=True)
+
+    def read(self, path, size, offset, fh):
+        h = self._open_files[fh]
+        h.fobj.seek(offset)
+        return h.fobj.read(size)
+
+    def write(self, path, data, offset, fh):
+        h = self._open_files[fh]
+        h.fobj.seek(offset)
+        h.fobj.write(data)
+        h.dirty = True
+        return len(data)
+
+    def truncate(self, path, length, fh=None):
+        if fh is not None and fh in self._open_files:
+            h = self._open_files[fh]
+            h.fobj.truncate(length)
+            h.dirty = True
+            return 0
+        # standalone truncate (no open handle): download, truncate, upload-replace
         entry = self._find_entry(path)
         if entry is None:
             raise FuseOSError(errno.ENOENT)
-        if entry.is_dir:
-            raise FuseOSError(errno.EISDIR)
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
-        name = os.path.basename(path)
-        note = self._notifier.begin(f"Opening {name}…")
         try:
-            self._disk.download(
-                proton_path(path), tmpdir,
-                progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
-            local = os.path.join(tmpdir, name)
-            fobj = open(local, "rb")
+            self._disk.download(proton_path(path), tmpdir)
+            local = os.path.join(tmpdir, os.path.basename(path))
+            with open(local, "r+b") as f:
+                f.truncate(length)
+            parent = proton_path(os.path.dirname(path) or "/")
+            self._disk.upload(local, parent, conflict="replace")
+            self._cache.invalidate(parent)
         except (ProtonDiskError, OSError):
-            # download failed, or it "succeeded" without producing the file:
-            # clean up the temp dir so it can't leak, and report an I/O error.
-            self._notifier.finish(note, f"Failed: {name}")
-            shutil.rmtree(tmpdir, ignore_errors=True)
             raise FuseOSError(errno.EIO)
-        self._notifier.finish(note, f"Ready: {name}")
-        fh = self._next_fh
-        self._next_fh += 1
-        self._open_files[fh] = (tmpdir, fobj)
-        return fh
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return 0
 
-    def read(self, path, size, offset, fh):
-        _tmpdir, fobj = self._open_files[fh]
-        fobj.seek(offset)
-        return fobj.read(size)
+    # ---- flush / release / upload ----
+    def _upload_handle(self, h) -> None:
+        if not (h.writable and h.dirty):
+            return
+        h.fobj.flush()
+        os.fsync(h.fobj.fileno())
+        name = os.path.basename(h.path)
+        parent = proton_path(os.path.dirname(h.path) or "/")
+        note = self._notifier.begin(f"Saving {name}…")
+        try:
+            self._disk.upload(
+                h.local(), parent, conflict="replace",
+                progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
+        except ProtonDiskError:
+            self._notifier.finish(note, f"Upload failed: {name}")
+            raise FuseOSError(errno.EIO)
+        self._notifier.finish(note, f"Saved {name} to Proton Drive")
+        h.dirty = False
+        self._cache.invalidate(parent)
+
+    def flush(self, path, fh):
+        h = self._open_files.get(fh)
+        if h is not None:
+            self._upload_handle(h)
+        return 0
+
+    def fsync(self, path, datasync, fh):
+        return self.flush(path, fh)
 
     def release(self, path, fh):
-        entry = self._open_files.pop(fh, None)
-        if entry is not None:
-            tmpdir, fobj = entry
-            fobj.close()
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        h = self._open_files.pop(fh, None)
+        if h is None:
+            return 0
+        try:
+            if h.writable and h.dirty:
+                try:
+                    self._upload_handle(h)
+                except FuseOSError:
+                    pass  # already surfaced at flush for well-behaved apps; don't leak
+        finally:
+            h.fobj.close()
+            shutil.rmtree(h.tmpdir, ignore_errors=True)
+            if self._write_handles.get(h.path) is h:
+                del self._write_handles[h.path]
         return 0
 
     # ---- read-only enforcement ----
     def _readonly(self, *args, **kwargs):
         raise FuseOSError(errno.EROFS)
 
-    write = create = mkdir = unlink = rmdir = _readonly
-    rename = truncate = chmod = chown = symlink = link = _readonly
+    mkdir = unlink = rmdir = _readonly
+    rename = chmod = chown = symlink = link = _readonly

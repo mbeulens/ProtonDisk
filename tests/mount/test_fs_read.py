@@ -55,12 +55,12 @@ def test_getattr_missing_raises_enoent():
 
 
 def test_readonly_ops_raise_erofs():
+    # Milestone 3b: write/create/truncate are now real (see test_fs_write.py);
+    # only the ops not yet implemented (Task 4: mkdir/unlink/rmdir/rename/...) stay EROFS.
     fs = ProtonDiskFS(FakeDisk())
     for call in (lambda: fs.mkdir("/x", 0o755),
                  lambda: fs.unlink("/a.txt"),
-                 lambda: fs.rename("/a.txt", "/b.txt"),
-                 lambda: fs.write("/a.txt", b"x", 0, 1),
-                 lambda: fs.create("/x", 0o644)):
+                 lambda: fs.rename("/a.txt", "/b.txt")):
         with pytest.raises(FuseOSError) as ei:
             call()
         assert ei.value.errno == errno.EROFS
