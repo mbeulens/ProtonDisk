@@ -50,11 +50,18 @@ class CLIRunner:
             )
         self.binary = resolved
 
-    def run(self, *args: str, input_text: str | None = None) -> dict | list:
+    def run(self, *args: str, input_text: str | None = None,
+            timeout: float | None = 120) -> dict | list:
+        # A bounded timeout keeps a metadata op (list/stat/auth/mkdir/…) from ever
+        # blocking indefinitely if the CLI hangs — offline it fails cleanly instead.
+        # Transfers pass timeout=None (large files legitimately run long).
         cmd = [self.binary, *args, "--json"]
-        completed = subprocess.run(
-            cmd, capture_output=True, text=True, input=input_text
-        )
+        try:
+            completed = subprocess.run(
+                cmd, capture_output=True, text=True, input=input_text, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            raise ProtonDiskError(f"proton-drive timed out after {timeout}s")
         if completed.returncode != 0:
             raise map_error(completed.returncode, completed.stdout, completed.stderr)
         stdout = completed.stdout.strip()

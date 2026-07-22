@@ -9,7 +9,7 @@ class FakeRunner:
         self.calls = []
         self._results = list(results or [])
 
-    def run(self, *args, input_text=None):
+    def run(self, *args, input_text=None, timeout=None):
         self.calls.append(args)
         return self._results.pop(0) if self._results else {}
 

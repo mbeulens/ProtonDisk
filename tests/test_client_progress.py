@@ -22,7 +22,7 @@ class FakeRunner:
         self._lines = lines or []
         self._result = result if result is not None else TRANSFER
 
-    def run(self, *args, input_text=None):
+    def run(self, *args, input_text=None, timeout=None):
         self.calls.append(args)
         return self._result
 

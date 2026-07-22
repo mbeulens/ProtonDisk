@@ -8,7 +8,7 @@ class FakeRunner:
         self.calls = []
         self._results = list(results or [])
 
-    def run(self, *args, input_text=None):
+    def run(self, *args, input_text=None, timeout=None):
         self.calls.append(args)
         if not self._results:
             return {}

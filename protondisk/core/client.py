@@ -50,7 +50,8 @@ class ProtonDisk:
                progress=None) -> TransferResult:
         if progress is None:
             data = self._runner.run(
-                "filesystem", "upload", "--conflict-strategy", conflict, local, parent)
+                "filesystem", "upload", "--conflict-strategy", conflict, local, parent,
+                timeout=None)  # a large upload legitimately runs longer than the metadata cap
         else:
             data = self._runner.run_streaming(
                 "filesystem", "upload", "--verbose",
@@ -60,7 +61,9 @@ class ProtonDisk:
 
     def download(self, remote: str, local_folder: str, *, progress=None) -> TransferResult:
         if progress is None:
-            data = self._runner.run("filesystem", "download", remote, local_folder)
+            data = self._runner.run(
+                "filesystem", "download", remote, local_folder,
+                timeout=None)  # a large download legitimately runs longer than the metadata cap
         else:
             data = self._runner.run_streaming(
                 "filesystem", "download", "--verbose", remote, local_folder,

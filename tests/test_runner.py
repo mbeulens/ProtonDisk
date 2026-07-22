@@ -80,3 +80,25 @@ def test_map_error_prefers_json_error_message():
     stdout = json.dumps({"error": {"message": "Rate limit hit, slow down"}})
     err = map_error(1, stdout, "")
     assert isinstance(err, RateLimitError) and "Rate limit" in str(err)
+
+
+def test_run_timeout_maps_to_protondisk_error(monkeypatch):
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ProtonDiskError):
+        CLIRunner().run("filesystem", "list", "/my-files", timeout=1)
+
+
+def test_run_passes_timeout_to_subprocess(monkeypatch):
+    monkeypatch.setattr("protondisk.core.runner.shutil.which", _which)
+    seen = {}
+    def fake_run(cmd, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return _Completed(0, stdout="{}")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    CLIRunner().run("filesystem", "list", "/my-files")        # default
+    assert seen["timeout"] == 120
+    CLIRunner().run("filesystem", "download", "a", "b", timeout=None)  # transfer opt-out
+    assert seen["timeout"] is None
