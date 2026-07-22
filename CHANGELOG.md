@@ -7,6 +7,47 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [1.0.0] — 2026-07-22
+
+**First stable release.** ProtonDisk is now a complete Linux app for Proton Drive: a
+graphical browser, a real mountable disk, and a one-command install that sets it up to
+run automatically — all built on the official `proton-drive` CLI, so authentication and
+end-to-end encryption stay with Proton.
+
+### The product at 1.0
+- **Core** (`protondisk.core`) — a typed Python wrapper over `proton-drive`: auth, browse,
+  transfer, organize, sharing, with a clean error model.
+- **GUI** (GTK4 + libadwaita) — sign in, browse `My files`, upload/download with live
+  transfer progress, new folder, rename, move, trash, and a sharing dialog.
+- **Mount** — Proton Drive as a **read-write disk** in any file manager: copy/paste files
+  in, save, make folders, delete, rename/move, with desktop notifications for transfer
+  phases.
+- **Install** — `install.sh` wires the checkout for your user (venv, `protondisk` command,
+  GUI entry) and a systemd user service that **auto-mounts `~/ProtonDisk` at login**.
+
+### Added since 0.5.0
+- **One-command install/uninstall** (`install.sh` / `uninstall.sh`): a `protondisk` command
+  on PATH, the GUI application entry, and a systemd user service for auto-mount at login.
+- **Auto-recovering mount** — a supervisor waits for the network **event-driven** (asleep on
+  a NetworkManager signal, ~0% CPU) and remounts by itself when connectivity returns. It
+  does **not** poll while offline.
+
+### Fixed since 0.5.0
+- **Offline never hangs the mount.** Metadata operations have a bounded (120 s) timeout, so
+  an unreachable network fails cleanly with an I/O error in a few seconds instead of ever
+  blocking; large uploads/downloads opt out so they can still run long.
+
+### Known limitations
+- Renaming onto an existing name returns `EEXIST` (Proton's rename cannot overwrite), so some
+  editors' safe-save (write-temp-then-rename) may fail — save whole-file instead.
+- Every save re-uploads the whole file (no deltas).
+- Auto-mount needs a valid Proton session; if it expires, `protondisk auth login` then
+  `systemctl --user restart protondisk-mount.service`.
+
+### Not in 1.0 (planned)
+- Photos and albums, public share links, and multi-account — the same features the official
+  CLI defers.
+
 ## [0.5.0] — 2026-07-22
 
 Milestone 3: **Proton Drive as a mountable disk** — a read-write FUSE mount with desktop

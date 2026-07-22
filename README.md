@@ -12,13 +12,31 @@ lacks: a **mountable disk** and a **graphical browser**.
 > It's called "Disk" (not "Drive") to avoid confusion with the official Proton
 > Drive product.
 
-## Status
+## Status — **1.0.0** 🎉
+
+Stable. ProtonDisk is a complete Proton Drive app for Linux: a graphical browser, a
+read-write mountable disk, and a one-command install with auto-mount at login.
 
 | Milestone | Feature | State |
 |-----------|---------|-------|
-| **1** | **Core CLI wrapper** (`protondisk.core`) | ✅ **Done — v0.2.0** |
-| **2** | **GTK4 + libadwaita graphical browser** (browse, transfer, organize, sharing) | ✅ **Done — v0.4.0** |
-| **3** | **FUSE mount** (Proton Drive as a read-write disk + notifications) | ✅ **Done — v0.5.0** |
+| **1** | **Core CLI wrapper** (`protondisk.core`) | ✅ Done — v0.2.0 |
+| **2** | **GTK4 + libadwaita graphical browser** (browse, transfer, organize, sharing) | ✅ Done — v0.4.0 |
+| **3** | **FUSE mount** (read-write disk + notifications) | ✅ Done — v0.5.0 |
+| **—** | **Install / auto-mount** (`install.sh`, systemd user service, auto-recover) | ✅ Done — v1.0.0 |
+
+## Install (recommended)
+
+```bash
+git clone https://github.com/mbeulens/ProtonDisk.git
+cd ProtonDisk
+./install.sh            # sets up the venv, the `protondisk` command, the GUI entry,
+                        # and a systemd service that auto-mounts ~/ProtonDisk at login
+protondisk auth login   # sign in once (browser)
+```
+
+`install.sh` is idempotent — re-run it to update after `git pull`. `./uninstall.sh` removes
+the integration (keeps the checkout). The mount auto-recovers when the network returns and
+does not poll while offline.
 
 ## Architecture
 
