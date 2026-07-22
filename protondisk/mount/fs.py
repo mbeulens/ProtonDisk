@@ -15,6 +15,11 @@ from .cache import ListingCache
 from .notify import Notifier
 from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
 
+# When a rename replaces an existing name we trash it first; the rename onto the
+# freed name may briefly still collide (Proton is eventually consistent), so retry.
+_RENAME_RETRIES = 4
+_RENAME_RETRY_DELAY = 0.5  # seconds between attempts
+
 
 class _Handle:
     __slots__ = ("tmpdir", "fobj", "path", "writable", "dirty")
@@ -267,22 +272,48 @@ class ProtonDiskFS(Operations):
         old_name = os.path.basename(old)
         new_name = os.path.basename(new)
         target_names = self._entry_names(new_parent)
-        if new_name in target_names:
-            raise FuseOSError(errno.EEXIST)  # Proton won't overwrite
-        # a cross-parent move lands old_name in the target dir first; block that
-        # collision too, before mutating anything.
+        # A cross-parent move first lands old_name in the target dir; if that name
+        # is taken by an unrelated file we can't safely resolve it.
         if old_parent != new_parent and old_name != new_name and old_name in target_names:
             raise FuseOSError(errno.EEXIST)
+        overwrite = new_name in target_names
         try:
+            if overwrite:
+                # Proton has no atomic overwrite, so the classic "write temp then
+                # rename over the original" save (GNOME Text Editor, VS Code) would
+                # fail. Trash the destination first — recoverable via Proton trash —
+                # then rename onto the freed name, retrying briefly to ride out the
+                # window where the just-trashed name still reads as taken.
+                self._disk.trash(f"{proton_path(new_parent)}/{new_name}")
             if old_parent == new_parent:
-                self._disk.rename(proton_path(old), new_name)
+                self._rename_settling(
+                    lambda: self._disk.rename(proton_path(old), new_name), overwrite)
             else:
                 self._disk.move(proton_path(old), proton_path(new_parent))
                 if new_name != old_name:
                     moved = f"{proton_path(new_parent)}/{old_name}"
-                    self._disk.rename(moved, new_name)
+                    self._rename_settling(
+                        lambda: self._disk.rename(moved, new_name), overwrite)
         except ProtonDiskError:
             raise FuseOSError(errno.EIO)
         self._cache.invalidate(proton_path(old_parent))
         self._cache.invalidate(proton_path(new_parent))
         return 0
+
+    def _rename_settling(self, op, retry) -> None:
+        # A rename onto a just-trashed name can momentarily still see it as taken
+        # (Proton is eventually consistent). When replacing, retry a few times to
+        # let the trash settle; otherwise run once.
+        if not retry:
+            op()
+            return
+        last = None
+        for attempt in range(_RENAME_RETRIES):
+            try:
+                op()
+                return
+            except ProtonDiskError as exc:
+                last = exc
+                if attempt < _RENAME_RETRIES - 1:
+                    time.sleep(_RENAME_RETRY_DELAY)
+        raise last
