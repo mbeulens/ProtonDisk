@@ -127,3 +127,46 @@ def test_cross_parent_move_blocked_when_source_name_exists_in_target():
         fs.rename("/a.txt", "/Dir/renamed.txt")   # move lands a.txt in Dir first -> collision
     assert ei.value.errno == errno.EEXIST
     assert all(c[0] not in ("move", "rename") for c in disk.calls)
+
+
+def test_delete_then_recreate_same_name_does_not_ghost(monkeypatch):
+    # After unlink, Proton's listing may still show the file (eventual consistency).
+    # A tombstone must hide it so an O_EXCL create / getattr sees the name as gone.
+    class StaleDisk(FakeDisk):
+        def trash(self, path):
+            self.calls.append(("trash", path))
+            # simulate eventual consistency: the file STAYS in the listing after trash
+    disk = StaleDisk(); fs = ProtonDiskFS(disk)
+    # a.txt exists in the listing
+    fs.unlink("/a.txt")
+    # even though the stale listing still contains a.txt, getattr must say ENOENT
+    with pytest.raises(FuseOSError) as ei:
+        fs.getattr("/a.txt")
+    assert ei.value.errno == errno.ENOENT
+    # ...and it must not appear in readdir
+    assert "a.txt" not in fs.readdir("/", None)
+
+
+def test_recreate_clears_tombstone(monkeypatch):
+    class StaleDisk(FakeDisk):
+        def trash(self, path):
+            self.calls.append(("trash", path))   # file stays in listing
+    disk = StaleDisk(); fs = ProtonDiskFS(disk)
+    fs.unlink("/a.txt")
+    assert fs._is_tombstoned("/a.txt") is True
+    fs.create("/a.txt", 0o644)          # recreate -> clears the tombstone
+    assert fs._is_tombstoned("/a.txt") is False
+    st = fs.getattr("/a.txt")           # visible again (served from the open write handle)
+    assert st["st_size"] == 0
+
+
+def test_tombstone_expires(monkeypatch):
+    t = [1000.0]
+    monkeypatch.setattr("protondisk.mount.fs.time.monotonic", lambda: t[0])
+    class StaleDisk(FakeDisk):
+        def trash(self, path): self.calls.append(("trash", path))
+    disk = StaleDisk(); fs = ProtonDiskFS(disk)
+    fs.unlink("/a.txt")
+    assert fs._is_tombstoned("/a.txt") is True
+    t[0] += 31                           # past the 30s TTL
+    assert fs._is_tombstoned("/a.txt") is False

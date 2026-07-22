@@ -20,6 +20,10 @@ from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
 _RENAME_RETRIES = 4
 _RENAME_RETRY_DELAY = 0.5  # seconds between attempts
 
+# How long a deleted name stays "gone" to mask Proton's eventual consistency
+# (observed ~6s; use a safe margin). Cleared early when the name is recreated.
+_TOMBSTONE_TTL = 30  # seconds
+
 
 class _Handle:
     __slots__ = ("tmpdir", "fobj", "path", "writable", "dirty")
@@ -43,6 +47,31 @@ class ProtonDiskFS(Operations):
         self._open_files: dict[int, _Handle] = {}
         self._write_handles: dict[str, _Handle] = {}
         self._next_fh = 1
+        # Proton is eventually consistent: a just-trashed name still shows up in
+        # listings for a few seconds. Tombstone deleted paths so getattr/readdir/
+        # O_EXCL-create treat them as gone during that window (fixes nano/vim swap
+        # files, `rm x; touch x`, atomic-save temp reuse). Cleared on recreate.
+        self._tombstones: dict[str, float] = {}  # fuse path -> monotonic expiry
+
+    # ---- tombstones (mask a just-deleted name during eventual consistency) ----
+    def _tombstone(self, path: str) -> None:
+        self._tombstones[path] = time.monotonic() + _TOMBSTONE_TTL
+
+    def _untombstone(self, path: str) -> None:
+        self._tombstones.pop(path, None)
+
+    def _is_tombstoned(self, path: str) -> bool:
+        expiry = self._tombstones.get(path)
+        if expiry is None:
+            return False
+        if time.monotonic() >= expiry:
+            del self._tombstones[path]
+            return False
+        return True
+
+    @staticmethod
+    def _child(fuse_dir: str, name: str) -> str:
+        return f"/{name}" if fuse_dir in ("", "/") else f"{fuse_dir.rstrip('/')}/{name}"
 
     # ---- internals ----
     def _listing(self, proton_dir: str):
@@ -56,6 +85,8 @@ class ProtonDiskFS(Operations):
         return cached
 
     def _find_entry(self, fuse_path: str):
+        if self._is_tombstoned(fuse_path):
+            return None  # just deleted — treat as gone despite eventual consistency
         parent_fuse, _, name = fuse_path.rstrip("/").rpartition("/")
         for entry in self._listing(proton_path(parent_fuse or "/")):
             if entry.name == name:
@@ -84,7 +115,8 @@ class ProtonDiskFS(Operations):
 
     def readdir(self, path, fh):
         entries = self._listing(proton_path(path))
-        return [".", "..", *[e.name for e in entries]]
+        names = [e.name for e in entries if not self._is_tombstoned(self._child(path, e.name))]
+        return [".", "..", *names]
 
     def statfs(self, path):
         return {"f_bsize": 4096, "f_frsize": 4096, "f_blocks": 0, "f_bfree": 0,
@@ -144,9 +176,11 @@ class ProtonDiskFS(Operations):
         except (ProtonDiskError, OSError):
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise FuseOSError(errno.EIO)
+        self._untombstone(path)  # opening for write (re)creates the name
         return self._register(tmpdir, fobj, path, writable=True, dirty=start_dirty)
 
     def create(self, path, mode, fi=None):
+        self._untombstone(path)  # recreating a just-deleted name is fine
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
         fobj = open(os.path.join(tmpdir, os.path.basename(path)), "w+b")
         # a freshly created file must be persisted even if nothing is written to it
@@ -244,7 +278,8 @@ class ProtonDiskFS(Operations):
 
     # ---- namespace ops ----
     def _entry_names(self, fuse_dir):
-        return {e.name for e in self._listing(proton_path(fuse_dir))}
+        return {e.name for e in self._listing(proton_path(fuse_dir))
+                if not self._is_tombstoned(self._child(fuse_dir, e.name))}
 
     def mkdir(self, path, mode):
         try:
@@ -260,6 +295,7 @@ class ProtonDiskFS(Operations):
         except ProtonDiskError:
             raise FuseOSError(errno.EIO)
         self._cache.invalidate(proton_path(os.path.dirname(path) or "/"))
+        self._tombstone(path)  # hide the ghost until Proton catches up
         return 0
 
     rmdir = unlink
@@ -298,6 +334,8 @@ class ProtonDiskFS(Operations):
             raise FuseOSError(errno.EIO)
         self._cache.invalidate(proton_path(old_parent))
         self._cache.invalidate(proton_path(new_parent))
+        self._tombstone(old)      # the source name no longer exists...
+        self._untombstone(new)    # ...and the destination now does
         return 0
 
     def _rename_settling(self, op, retry) -> None:
