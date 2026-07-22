@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=ProtonDisk
+GenericName=Proton Drive Browser
+Comment=Browse and transfer your Proton Drive files
+# @REPO@ is substituted with the checkout path by install.sh.
+Exec=@REPO@/scripts/protondisk-gui
+Icon=@REPO@/assets/protondisk.svg
+Terminal=false
+Categories=Network;FileTransfer;GTK;
+Keywords=Proton;Drive;Cloud;Files;Storage;
+StartupNotify=true
+StartupWMClass=dev.protondisk.App

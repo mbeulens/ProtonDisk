@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch (foreground) the ProtonDisk read-write FUSE mount.
+#
+# Used by the systemd user service (protondisk-mount.service) and runnable directly.
+# The mount point defaults to ~/ProtonDisk; pass a different path as the first argument.
+# Self-healing: creates the GTK/fusepy venv on first run, so it always mounts the
+# CURRENT source in this checkout.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+VENV="$REPO/.venv-gui"
+MOUNTPOINT="${1:-$HOME/ProtonDisk}"
+
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "ProtonDisk: setting up the environment (first run only)…" >&2
+    python3 -m venv --system-site-packages "$VENV"
+    "$VENV/bin/pip" install -q -e "$REPO" fusepy
+fi
+
+exec "$VENV/bin/python" -m protondisk.cli mount "$MOUNTPOINT"

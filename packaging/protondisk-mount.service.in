@@ -1,0 +1,20 @@
+[Unit]
+Description=ProtonDisk — Proton Drive mounted as a disk
+Documentation=https://github.com/mbeulens/ProtonDisk
+# Don't retry forever if the user isn't signed in / network is down yet.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# @REPO@ is substituted with the checkout path by install.sh.
+# %h is the user's home directory.
+ExecStart=@REPO@/scripts/protondisk-mount %h/ProtonDisk
+# SIGTERM (service stop / logout) makes libfuse tear the mount down; this is a
+# best-effort backstop (the leading '-' ignores failure if already unmounted).
+ExecStopPost=-/usr/bin/fusermount3 -uz %h/ProtonDisk
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target
