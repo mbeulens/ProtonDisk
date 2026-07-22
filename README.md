@@ -18,7 +18,7 @@ lacks: a **mountable disk** and a **graphical browser**.
 |-----------|---------|-------|
 | **1** | **Core CLI wrapper** (`protondisk.core`) | ✅ **Done — v0.2.0** |
 | **2** | **GTK4 + libadwaita graphical browser** (browse, transfer, organize, sharing) | ✅ **Done — v0.4.0** |
-| 3 | FUSE mount (Proton Drive as a disk) | ⏳ Planned |
+| **3** | **FUSE mount** (Proton Drive as a read-write disk + notifications) | ✅ **Done — v0.5.0** |
 
 ## Architecture
 
@@ -100,6 +100,25 @@ throbber and the live transfer phase (Encrypting / Uploading / Downloading /
 Decrypting / Finishing). Right-click a row to **rename, move (cut → Paste),
 trash, or share** it, and use **New Folder** in the header. Run GUI tests with
 `.venv-gui/bin/pytest`.
+
+## Mount as a disk (Milestone 3)
+
+Mount Proton Drive `/my-files` as a **read-write** disk you can browse in any file manager:
+
+```bash
+# needs system fusepy + libfuse2; use the same venv as the GUI
+.venv-gui/bin/python -m protondisk.cli mount ~/ProtonDisk    # foreground; Ctrl-C to unmount
+# ... in another terminal:
+.venv-gui/bin/python -m protondisk.cli unmount ~/ProtonDisk
+```
+
+Then browse `~/ProtonDisk` in Nautilus: open files, **copy/paste files in** (upload), save
+edits, make folders, delete (→ trash), rename/move. Transfer activity (Downloading /
+Encrypting / Uploading …) shows as desktop notifications.
+
+Notes: renaming onto an existing name fails (Proton can't overwrite — save whole-file
+instead); every save re-uploads the whole file; during an upload the file manager may sit at
+"finishing" while the ProtonDisk notification shows the real phase.
 
 ## Using the core from Python
 

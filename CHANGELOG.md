@@ -7,6 +7,44 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [0.5.0] — 2026-07-22
+
+Milestone 3: **Proton Drive as a mountable disk** — a read-write FUSE mount with desktop
+notifications. `protondisk mount [MOUNTPOINT]` / `protondisk unmount [MOUNTPOINT]`; default
+mount point `~/ProtonDisk`, root maps to `/my-files`. Built on `protondisk.core` via fusepy.
+
+### Added
+- **Browse Proton Drive as a disk** in any file manager or the shell — folders, sizes, and
+  timestamps, with files read via download-on-open (cached). A short-TTL listing cache
+  serves `getattr` from the parent listing, so an `ls` of N files is one Drive call.
+- **Read-write** — copy/paste files in (upload), save edits, create folders, delete
+  (→ trash, recoverable), and rename/move. Writes buffer to a local temp file and upload
+  (whole-file, `conflict=replace`) on close; namespace ops map to the core façade.
+- **Desktop notifications** (libnotify, best-effort) surface the live transfer phase —
+  Downloading / Decrypting / Encrypting / Uploading / Finishing — reusing the CLI's
+  `--verbose` stream. Silently disabled where libnotify/D-Bus is unavailable.
+- Core: `CLIRunner.run_streaming` + `parse_progress_line` drive transfer progress;
+  `upload`/`download` accept a `progress=` callback.
+
+### Fixed
+- **File sizes are now the true plaintext size.** Previously the encrypted storage size
+  (`totalStorageSize`) was reported — e.g. a small text file showed as tens of bytes. Now
+  uses `claimedSize`, which also corrects the sizes shown in the GUI. (Before the fix this
+  also corrupted appends by positioning writes past the real end of file.)
+- The read-write mount advertises writable permissions (0755/0644) so file managers offer
+  paste/save/delete.
+- `touch` / copying an empty file / saving a 0-byte file now persists (previously dropped).
+
+### Known limitations
+- Renaming onto an existing name returns `EEXIST` (Proton's rename cannot overwrite), so
+  some editors' safe-save (write-temp-then-rename) may fail — save whole-file instead.
+- Every save re-uploads the whole file (no deltas).
+- During an upload the file manager's own copy dialog may sit at "finishing"; the ProtonDisk
+  notification shows the real status.
+- The mount needs system **fusepy** + **libfuse2**; run it from a `--system-site-packages`
+  venv (the same `.venv-gui` used for the GUI). Read-only-first was an internal step; this
+  release ships the full read-write mount.
+
 ## [0.4.0] — 2026-07-20
 
 GUI increment 2: **file management and sharing** in the graphical browser.
