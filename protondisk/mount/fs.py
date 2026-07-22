@@ -12,6 +12,7 @@ from fuse import FuseOSError, Operations
 
 from protondisk.core.errors import ProtonDiskError
 from .cache import ListingCache
+from .ignore import is_ephemeral
 from .notify import Notifier
 from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
 
@@ -26,14 +27,15 @@ _TOMBSTONE_TTL = 30  # seconds
 
 
 class _Handle:
-    __slots__ = ("tmpdir", "fobj", "path", "writable", "dirty")
+    __slots__ = ("tmpdir", "fobj", "path", "writable", "dirty", "ephemeral")
 
-    def __init__(self, tmpdir, fobj, path, writable):
+    def __init__(self, tmpdir, fobj, path, writable, ephemeral=False):
         self.tmpdir = tmpdir
         self.fobj = fobj
         self.path = path
         self.writable = writable
         self.dirty = False
+        self.ephemeral = ephemeral  # local-only editor/OS temp; never uploaded
 
     def local(self):
         return os.path.join(self.tmpdir, os.path.basename(self.path))
@@ -52,6 +54,38 @@ class ProtonDiskFS(Operations):
         # O_EXCL-create treat them as gone during that window (fixes nano/vim swap
         # files, `rm x; touch x`, atomic-save temp reuse). Cleared on recreate.
         self._tombstones: dict[str, float] = {}  # fuse path -> monotonic expiry
+        # Editor/OS temp files (vim swap, GNOME temps, .DS_Store, …) live only here
+        # and never touch the Drive — see ignore.is_ephemeral.
+        self._local_root = tempfile.mkdtemp(prefix="protondisk-eph-")
+
+    # ---- local-only ephemeral files (editor/OS temp; never uploaded) ----
+    @staticmethod
+    def _is_ephemeral(path: str) -> bool:
+        return is_ephemeral(os.path.basename(path))
+
+    def _eph_local(self, fuse_path: str) -> str:
+        return os.path.join(self._local_root, fuse_path.lstrip("/"))
+
+    def _eph_getattr(self, path: str):
+        local = self._eph_local(path)
+        if not os.path.exists(local):
+            raise FuseOSError(errno.ENOENT)
+        info = os.stat(local)
+        now = time.time()
+        return {
+            "st_mode": stat_mod.S_IFREG | 0o644, "st_nlink": 1,
+            "st_size": info.st_size, "st_mtime": info.st_mtime,
+            "st_ctime": info.st_mtime, "st_atime": now,
+            "st_uid": os.getuid(), "st_gid": os.getgid(),
+        }
+
+    def _eph_names(self, fuse_dir: str) -> list[str]:
+        # ephemeral files created directly under this directory
+        d = self._eph_local(fuse_dir if fuse_dir != "/" else "")
+        try:
+            return [n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n))]
+        except OSError:
+            return []
 
     # ---- tombstones (mask a just-deleted name during eventual consistency) ----
     def _tombstone(self, path: str) -> None:
@@ -97,6 +131,8 @@ class ProtonDiskFS(Operations):
     def getattr(self, path, fh=None):
         if path == "/":
             return root_stat_dict(time.time())
+        if self._is_ephemeral(path):
+            return self._eph_getattr(path)   # local-only; never touches the Drive
         h = self._write_handles.get(path)
         if h is not None:
             h.fobj.flush()
@@ -115,7 +151,10 @@ class ProtonDiskFS(Operations):
 
     def readdir(self, path, fh):
         entries = self._listing(proton_path(path))
-        names = [e.name for e in entries if not self._is_tombstoned(self._child(path, e.name))]
+        names = [e.name for e in entries
+                 if not self._is_tombstoned(self._child(path, e.name))
+                 and not is_ephemeral(e.name)]      # ephemerals shown from local scratch
+        names += self._eph_names(path)               # local-only temp files in this dir
         return [".", "..", *names]
 
     def statfs(self, path):
@@ -123,18 +162,36 @@ class ProtonDiskFS(Operations):
                 "f_bavail": 0, "f_files": 0, "f_ffree": 0, "f_namemax": 255}
 
     # ---- handle registry ----
-    def _register(self, tmpdir, fobj, path, writable, dirty=False) -> int:
-        h = _Handle(tmpdir, fobj, path, writable)
+    def _register(self, tmpdir, fobj, path, writable, dirty=False, ephemeral=False) -> int:
+        h = _Handle(tmpdir, fobj, path, writable, ephemeral=ephemeral)
         h.dirty = dirty
         fh = self._next_fh
         self._next_fh += 1
         self._open_files[fh] = h
-        if writable:
+        if writable and not ephemeral:
             self._write_handles[path] = h
         return fh
 
     # ---- open / read / write / truncate ----
+    def _eph_open(self, path, flags):
+        # open/create a local-only ephemeral file; never touches the Drive
+        local = self._eph_local(path)
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        writable = is_write_flags(flags)
+        if not writable:
+            if not os.path.exists(local):
+                raise FuseOSError(errno.ENOENT)
+            fobj = open(local, "rb")
+        elif os.path.exists(local) and not (flags & os.O_TRUNC):
+            fobj = open(local, "r+b")
+        else:
+            fobj = open(local, "w+b")
+        eph_dir = os.path.dirname(local)
+        return self._register(eph_dir, fobj, path, writable=writable, ephemeral=True)
+
     def open(self, path, flags):
+        if self._is_ephemeral(path):
+            return self._eph_open(path, flags)
         writable = is_write_flags(flags)
         entry = self._find_entry(path)
         name = os.path.basename(path)
@@ -180,6 +237,12 @@ class ProtonDiskFS(Operations):
         return self._register(tmpdir, fobj, path, writable=True, dirty=start_dirty)
 
     def create(self, path, mode, fi=None):
+        if self._is_ephemeral(path):
+            local = self._eph_local(path)
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            fobj = open(local, "w+b")
+            return self._register(os.path.dirname(local), fobj, path,
+                                  writable=True, ephemeral=True)
         self._untombstone(path)  # recreating a just-deleted name is fine
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
         fobj = open(os.path.join(tmpdir, os.path.basename(path)), "w+b")
@@ -205,6 +268,13 @@ class ProtonDiskFS(Operations):
             h.fobj.truncate(length)
             h.dirty = True
             return 0
+        if self._is_ephemeral(path):
+            local = self._eph_local(path)
+            if not os.path.exists(local):
+                raise FuseOSError(errno.ENOENT)
+            with open(local, "r+b") as f:
+                f.truncate(length)
+            return 0
         # standalone truncate (no open handle): download, truncate, upload-replace
         entry = self._find_entry(path)
         if entry is None:
@@ -226,8 +296,8 @@ class ProtonDiskFS(Operations):
 
     # ---- flush / release / upload ----
     def _upload_handle(self, h) -> None:
-        if not (h.writable and h.dirty):
-            return
+        if h.ephemeral or not (h.writable and h.dirty):
+            return  # ephemeral temp files are never uploaded
         h.fobj.flush()
         os.fsync(h.fobj.fileno())
         name = os.path.basename(h.path)
@@ -257,6 +327,9 @@ class ProtonDiskFS(Operations):
         h = self._open_files.pop(fh, None)
         if h is None:
             return 0
+        if h.ephemeral:
+            h.fobj.close()   # keep the local file (persists like a real file); no upload
+            return 0
         try:
             if h.writable and h.dirty:
                 try:
@@ -274,7 +347,12 @@ class ProtonDiskFS(Operations):
     def _readonly(self, *args, **kwargs):
         raise FuseOSError(errno.EROFS)
 
-    chmod = chown = symlink = link = _readonly
+    def chmod(self, path, mode):
+        if self._is_ephemeral(path):
+            return 0   # local-only temp; accept mode changes as a no-op
+        raise FuseOSError(errno.EROFS)  # Proton Drive has no chmod
+
+    chown = symlink = link = _readonly
 
     # ---- namespace ops ----
     def _entry_names(self, fuse_dir):
@@ -290,6 +368,12 @@ class ProtonDiskFS(Operations):
         return 0
 
     def unlink(self, path):
+        if self._is_ephemeral(path):
+            local = self._eph_local(path)
+            if not os.path.exists(local):
+                raise FuseOSError(errno.ENOENT)
+            os.remove(local)     # local-only; nothing to trash on the Drive
+            return 0
         try:
             self._disk.trash(proton_path(path))
         except ProtonDiskError:
@@ -303,6 +387,8 @@ class ProtonDiskFS(Operations):
     def rename(self, old, new):
         if old == new:
             return 0  # renaming a path onto itself is a no-op, not a conflict
+        if self._is_ephemeral(old) or self._is_ephemeral(new):
+            return self._rename_ephemeral(old, new)
         old_parent = os.path.dirname(old) or "/"
         new_parent = os.path.dirname(new) or "/"
         old_name = os.path.basename(old)
@@ -336,6 +422,61 @@ class ProtonDiskFS(Operations):
         self._cache.invalidate(proton_path(new_parent))
         self._tombstone(old)      # the source name no longer exists...
         self._untombstone(new)    # ...and the destination now does
+        return 0
+
+    def _rename_ephemeral(self, old, new) -> int:
+        src_eph, dst_eph = self._is_ephemeral(old), self._is_ephemeral(new)
+        src_local = self._eph_local(old)
+        if src_eph and dst_eph:
+            # both local-only: a plain local move within the scratch area
+            dst_local = self._eph_local(new)
+            os.makedirs(os.path.dirname(dst_local), exist_ok=True)
+            os.replace(src_local, dst_local)
+            return 0
+        if src_eph and not dst_eph:
+            # atomic-save completion: a local temp is renamed onto a real Drive
+            # file. Upload the temp's content to the destination (replace), then
+            # drop the local temp. Nothing extra ever lands on the Drive.
+            if not os.path.exists(src_local):
+                raise FuseOSError(errno.ENOENT)
+            new_parent = os.path.dirname(new) or "/"
+            new_name = os.path.basename(new)
+            staging = tempfile.mkdtemp(prefix="protondisk-mnt-")
+            note = self._notifier.begin(f"Saving {new_name}…")
+            try:
+                shutil.copyfile(src_local, os.path.join(staging, new_name))
+                self._disk.upload(
+                    os.path.join(staging, new_name), proton_path(new_parent),
+                    conflict="replace",
+                    progress=lambda ph: self._notifier.update(note, f"{ph} {new_name}"))
+            except (ProtonDiskError, OSError):
+                self._notifier.finish(note, f"Save failed: {new_name}")
+                raise FuseOSError(errno.EIO)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+            self._notifier.finish(note, f"Saved {new_name} to Proton Drive")
+            os.remove(src_local)
+            self._cache.invalidate(proton_path(new_parent))
+            self._untombstone(new)
+            return 0
+        # src real -> dst ephemeral (rare): move the real file's content into the
+        # local scratch, then trash the real source.
+        entry = self._find_entry(old)
+        if entry is None:
+            raise FuseOSError(errno.ENOENT)
+        dst_local = self._eph_local(new)
+        os.makedirs(os.path.dirname(dst_local), exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="protondisk-mnt-")
+        try:
+            self._disk.download(proton_path(old), tmp)
+            shutil.move(os.path.join(tmp, os.path.basename(old)), dst_local)
+            self._disk.trash(proton_path(old))
+        except (ProtonDiskError, OSError):
+            raise FuseOSError(errno.EIO)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self._cache.invalidate(proton_path(os.path.dirname(old) or "/"))
+        self._tombstone(old)
         return 0
 
     def _rename_settling(self, op, retry) -> None:
