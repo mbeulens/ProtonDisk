@@ -12,10 +12,12 @@ lacks: a **mountable disk** and a **graphical browser**.
 > It's called "Disk" (not "Drive") to avoid confusion with the official Proton
 > Drive product.
 
-## Status — **1.0.0** 🎉
+## Status — **2.0.0** 🎉
 
 Stable. ProtonDisk is a complete Proton Drive app for Linux: a graphical browser, a
-read-write mountable disk, and a one-command install with auto-mount at login.
+read-write mountable disk, and a one-command install with auto-mount at login. Real text
+editors (nano, vim, GNOME Text Editor, VS Code) work correctly on the mount, and their
+swap/lock/temp files are kept off your Drive.
 
 | Milestone | Feature | State |
 |-----------|---------|-------|

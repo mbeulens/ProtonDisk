@@ -7,6 +7,35 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [2.0.0] — 2026-07-22
+
+**Editors just work on the mount.** This release makes real text editors and file
+managers behave correctly on a mounted Proton Drive — the save patterns that broke in
+1.0.0 now work, and editor scratch files no longer clutter your Drive.
+
+### Added
+- **Editor & OS temp files are kept local-only.** vim/emacs swap and lock files, GNOME
+  atomic-save temps (`.goutputstream-*`), LibreOffice/Office locks, `.DS_Store`,
+  `Thumbs.db`, and similar now live in a local scratch area and are **never uploaded** to
+  Proton Drive — no upload churn, no clutter, and no stranded lock files if an editor or
+  the network drops. They still work fully within the mount (create/read/write/delete/list).
+  Backups (`file~`) and generic `*.tmp` stay synced.
+
+### Fixed
+- **Atomic-rename saves work** (GNOME Text Editor, VS Code). Replacing an existing file by
+  renaming a temp over it now succeeds — the old file is moved to Proton trash
+  (recoverable) and the new content takes its place. A GNOME `.goutputstream-*` save
+  uploads its content straight to the destination with nothing extra left behind.
+- **Delete-then-recreate no longer ghosts.** Proton is eventually consistent, so a
+  just-deleted name used to linger in listings and make an `O_EXCL` create fail with
+  "File exists" (breaking nano/vim swap files, `rm x; touch x`). Deleted names are now
+  tombstoned briefly so they read as gone until the Drive catches up.
+
+### Compatibility
+- No changes to the CLI, the GUI, or the on-disk format. The mount's behavior for editor
+  temp files changed (they no longer appear on the Drive) — intentional, and the reason
+  for the major version bump.
+
 ## [1.0.0] — 2026-07-22
 
 **First stable release.** ProtonDisk is now a complete Linux app for Proton Drive: a
