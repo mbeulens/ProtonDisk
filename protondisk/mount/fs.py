@@ -226,5 +226,47 @@ class ProtonDiskFS(Operations):
     def _readonly(self, *args, **kwargs):
         raise FuseOSError(errno.EROFS)
 
-    mkdir = unlink = rmdir = _readonly
-    rename = chmod = chown = symlink = link = _readonly
+    chmod = chown = symlink = link = _readonly
+
+    # ---- namespace ops ----
+    def _entry_names(self, fuse_dir):
+        return {e.name for e in self._listing(proton_path(fuse_dir))}
+
+    def mkdir(self, path, mode):
+        try:
+            self._disk.mkdir(proton_path(path))
+        except ProtonDiskError:
+            raise FuseOSError(errno.EIO)
+        self._cache.invalidate(proton_path(os.path.dirname(path) or "/"))
+        return 0
+
+    def unlink(self, path):
+        try:
+            self._disk.trash(proton_path(path))
+        except ProtonDiskError:
+            raise FuseOSError(errno.EIO)
+        self._cache.invalidate(proton_path(os.path.dirname(path) or "/"))
+        return 0
+
+    rmdir = unlink
+
+    def rename(self, old, new):
+        old_parent = os.path.dirname(old) or "/"
+        new_parent = os.path.dirname(new) or "/"
+        old_name = os.path.basename(old)
+        new_name = os.path.basename(new)
+        if new_name in self._entry_names(new_parent):
+            raise FuseOSError(errno.EEXIST)  # Proton won't overwrite
+        try:
+            if old_parent == new_parent:
+                self._disk.rename(proton_path(old), new_name)
+            else:
+                self._disk.move(proton_path(old), proton_path(new_parent))
+                if new_name != old_name:
+                    moved = f"{proton_path(new_parent)}/{old_name}"
+                    self._disk.rename(moved, new_name)
+        except ProtonDiskError:
+            raise FuseOSError(errno.EIO)
+        self._cache.invalidate(proton_path(old_parent))
+        self._cache.invalidate(proton_path(new_parent))
+        return 0
