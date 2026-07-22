@@ -60,6 +60,24 @@ def test_entry_folder_type():
     assert e.is_dir is True and e.size is None
 
 
+def test_entry_size_prefers_claimed_plaintext_over_encrypted_storage():
+    # A 4-byte plaintext file: totalStorageSize is the ENCRYPTED size (82);
+    # activeRevision.value.claimedSize (4) is the real content size we must report.
+    node = {
+        "uid": "U", "name": {"ok": True, "value": "sz.txt"}, "type": "file",
+        "totalStorageSize": 82, "modificationTime": "2026-03-26T00:51:13.000Z",
+        "activeRevision": {"ok": True, "value": {"claimedSize": 4, "storageSize": 82}},
+    }
+    e = Entry.from_json(node, parent="/my-files")
+    assert e.size == 4          # plaintext, not the 82-byte encrypted storage size
+
+
+def test_entry_size_falls_back_to_storage_size_without_revision():
+    node = {"uid": "U", "name": {"ok": True, "value": "x"}, "type": "file",
+            "totalStorageSize": 10}
+    assert Entry.from_json(node, parent="/my-files").size == 10
+
+
 def test_entry_info_uses_explicit_path_override():
     # `filesystem info /my-files` returns name "root"; the path override wins.
     info = {"uid": "ROOT~PARENT", "name": {"ok": True, "value": "root"},

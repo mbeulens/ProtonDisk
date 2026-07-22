@@ -20,14 +20,14 @@ def test_is_write_flags():
 def test_stat_dict_file_and_dir():
     f = Entry("a.txt", "/my-files/a.txt", False, 95, 1720000000.0, "u")
     sf = stat_dict(f, now=1.0)
-    assert sf["st_mode"] == (stat_mod.S_IFREG | 0o444)
+    assert sf["st_mode"] == (stat_mod.S_IFREG | 0o644)
     assert sf["st_size"] == 95 and sf["st_nlink"] == 1 and sf["st_mtime"] == 1720000000.0
     d = Entry("Dir", "/my-files/Dir", True, None, None, "u")
     sd = stat_dict(d, now=7.0)
-    assert sd["st_mode"] == (stat_mod.S_IFDIR | 0o555)
+    assert sd["st_mode"] == (stat_mod.S_IFDIR | 0o755)
     assert sd["st_size"] == 0 and sd["st_nlink"] == 2 and sd["st_mtime"] == 7.0  # mtime None -> now
 
 
 def test_root_stat_dict_is_dir():
     r = root_stat_dict(now=3.0)
-    assert r["st_mode"] == (stat_mod.S_IFDIR | 0o555) and r["st_mtime"] == 3.0
+    assert r["st_mode"] == (stat_mod.S_IFDIR | 0o755) and r["st_mtime"] == 3.0

@@ -19,11 +19,14 @@ def is_write_flags(flags: int) -> bool:
 
 
 def stat_dict(entry, now: float) -> dict:
+    # The mount is read-write, so advertise writable modes — file managers
+    # (Nautilus) check these bits and refuse paste/save/delete on a 0o555/0o444
+    # directory even when the underlying FUSE fs would allow the operation.
     mtime = entry.mtime if entry.mtime is not None else now
     if entry.is_dir:
-        mode, nlink, size = stat_mod.S_IFDIR | 0o555, 2, 0
+        mode, nlink, size = stat_mod.S_IFDIR | 0o755, 2, 0
     else:
-        mode, nlink, size = stat_mod.S_IFREG | 0o444, 1, (entry.size or 0)
+        mode, nlink, size = stat_mod.S_IFREG | 0o644, 1, (entry.size or 0)
     return {
         "st_mode": mode, "st_nlink": nlink, "st_size": size,
         "st_mtime": mtime, "st_ctime": mtime, "st_atime": mtime,
@@ -33,7 +36,7 @@ def stat_dict(entry, now: float) -> dict:
 
 def root_stat_dict(now: float) -> dict:
     return {
-        "st_mode": stat_mod.S_IFDIR | 0o555, "st_nlink": 2, "st_size": 0,
+        "st_mode": stat_mod.S_IFDIR | 0o755, "st_nlink": 2, "st_size": 0,
         "st_mtime": now, "st_ctime": now, "st_atime": now,
         "st_uid": os.getuid(), "st_gid": os.getgid(),
     }

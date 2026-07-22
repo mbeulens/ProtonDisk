@@ -29,6 +29,22 @@ def _basename(path: str) -> str:
     return stripped.rsplit("/", 1)[-1]
 
 
+def _content_size(data: dict):
+    """The plaintext content size of a node.
+
+    `activeRevision.value.claimedSize` is the real (decrypted) byte count;
+    `totalStorageSize` is the ENCRYPTED storage size (PGP + block overhead), which
+    is larger and would corrupt append/edit offsets if used as the file size. Fall
+    back to `totalStorageSize` when there is no active revision (e.g. Proton docs).
+    """
+    revision = data.get("activeRevision")
+    if isinstance(revision, dict):
+        value = revision.get("value")
+        if isinstance(value, dict) and value.get("claimedSize") is not None:
+            return value.get("claimedSize")
+    return data.get("totalStorageSize")
+
+
 @dataclass(frozen=True)
 class Entry:
     name: str
@@ -56,7 +72,7 @@ class Entry:
             name=name,
             path=node_path,
             is_dir=data.get("type") == "folder",
-            size=data.get("totalStorageSize"),
+            size=_content_size(data),
             mtime=_parse_iso(data.get("modificationTime")),
             uid=data.get("uid"),
         )

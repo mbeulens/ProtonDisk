@@ -189,7 +189,7 @@ class ProtonDiskFS(Operations):
             self._disk.upload(
                 h.local(), parent, conflict="replace",
                 progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
-        except ProtonDiskError:
+        except (ProtonDiskError, OSError):
             self._notifier.finish(note, f"Upload failed: {name}")
             raise FuseOSError(errno.EIO)
         self._notifier.finish(note, f"Saved {name} to Proton Drive")
@@ -251,6 +251,8 @@ class ProtonDiskFS(Operations):
     rmdir = unlink
 
     def rename(self, old, new):
+        if old == new:
+            return 0  # renaming a path onto itself is a no-op, not a conflict
         old_parent = os.path.dirname(old) or "/"
         new_parent = os.path.dirname(new) or "/"
         old_name = os.path.basename(old)

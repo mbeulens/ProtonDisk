@@ -103,3 +103,19 @@ def test_upload_notification_phases():
     assert ("update", "Encrypting… n.txt") in note.events
     assert ("update", "Uploading… n.txt") in note.events
     assert note.events[-1][0] == "finish"
+
+
+def test_standalone_truncate_downloads_truncates_uploads():
+    # truncate(fh=None): download existing, truncate to length, upload-replace.
+    class ExistingDisk(FakeDisk):
+        def __init__(self):
+            super().__init__()
+            self._tree["/my-files"] = [Entry("e.txt", "/my-files/e.txt", False, 8, 1.0, "e")]
+        def download(self, remote, folder, progress=None):
+            with open(os.path.join(folder, os.path.basename(remote)), "wb") as f:
+                f.write(b"12345678")           # 8 bytes on the "drive"
+    disk = ExistingDisk()
+    fs = ProtonDiskFS(disk, notifier=FakeNotifier())
+    assert fs.truncate("/e.txt", 3) == 0          # no fh -> standalone path
+    assert disk.uploads[0][0] == b"123"           # uploaded the truncated content
+    assert disk.uploads[0][2] == "replace"

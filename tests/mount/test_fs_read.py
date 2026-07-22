@@ -33,14 +33,14 @@ def test_readdir_root():
 def test_getattr_root_is_dir():
     fs = ProtonDiskFS(FakeDisk())
     st = fs.getattr("/")
-    assert st["st_mode"] == (stat_mod.S_IFDIR | 0o555)
+    assert st["st_mode"] == (stat_mod.S_IFDIR | 0o755)
 
 
 def test_getattr_file_from_parent_listing_is_one_list_call():
     disk = FakeDisk()
     fs = ProtonDiskFS(disk)
     st = fs.getattr("/a.txt")
-    assert st["st_mode"] == (stat_mod.S_IFREG | 0o444)
+    assert st["st_mode"] == (stat_mod.S_IFREG | 0o644)
     assert st["st_size"] == 95
     # getattr of two entries in the same dir must not multiply list() calls (cache)
     fs.getattr("/Reports")

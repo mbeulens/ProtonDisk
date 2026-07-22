@@ -71,3 +71,9 @@ def test_core_error_maps_to_eio():
     with pytest.raises(FuseOSError) as ei:
         fs.unlink("/a.txt")
     assert ei.value.errno == errno.EIO
+
+
+def test_rename_onto_itself_is_noop_not_eexist():
+    disk = FakeDisk(); fs = ProtonDiskFS(disk)
+    assert fs.rename("/a.txt", "/a.txt") == 0        # self-rename: no-op
+    assert all(c[0] not in ("rename", "move") for c in disk.calls)
