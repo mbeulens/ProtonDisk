@@ -28,7 +28,8 @@ echo "· installing package + dependencies …"
 "$VENV/bin/pip" install -q -e "$REPO" fusepy
 
 # 2. make the launchers executable
-chmod +x "$REPO/scripts/protondisk-gui" "$REPO/scripts/protondisk-mount"
+chmod +x "$REPO/scripts/protondisk-gui" "$REPO/scripts/protondisk-mount" \
+         "$REPO/scripts/protondisk-mount-daemon"
 
 # 3. `protondisk` command on PATH
 mkdir -p "$BIN_DIR"

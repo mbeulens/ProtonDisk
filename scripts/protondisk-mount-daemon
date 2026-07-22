@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Supervised, auto-recovering mount for the systemd user service.
+#
+# Waits (event-driven, NO busy-polling) for the network to come up, mounts in the
+# foreground, and when the mount exits, waits again. While offline the process is
+# parked inside `nm-online` — asleep on a NetworkManager D-Bus signal, using ~no
+# CPU — so it does NOT poll. When the network returns it wakes and mounts by
+# itself (auto-recovery).
+#
+# Used only by protondisk-mount.service. For a one-shot manual mount, use
+# scripts/protondisk-mount instead.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+MOUNTPOINT="${1:-$HOME/ProtonDisk}"
+MOUNT="$REPO/scripts/protondisk-mount"
+
+wait_online() {
+    if command -v nm-online >/dev/null 2>&1; then
+        # Blocks until NetworkManager reports connectivity. Event-driven (waits on
+        # a D-Bus signal, ~no CPU); returns instantly if already online. -t is the
+        # max wait — nm-online caps it at 2073600s (~24 days), effectively "forever".
+        nm-online -q -t 2073600 || true
+    else
+        # No NetworkManager: fall back to an infrequent connectivity probe. Still
+        # gentle (every 60s), not a tight loop.
+        until getent hosts drive-api.proton.me >/dev/null 2>&1; do sleep 60; done
+    fi
+}
+
+while true; do
+    wait_online
+    "$MOUNT" "$MOUNTPOINT" || true    # foreground; returns on unmount/stop or a start failure
+    # The mount ended. Back off before retrying so an online-but-failing start
+    # (e.g. an expired Proton session) cannot tight-loop. While offline, the next
+    # wait_online blocks anyway, so this never becomes offline polling.
+    sleep 30
+done
