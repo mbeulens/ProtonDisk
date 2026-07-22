@@ -37,6 +37,19 @@ def test_mount_when_authed_calls_mounter(capsys):
     assert "/tmp/mp" in capsys.readouterr().out
 
 
+def test_mount_message_mentions_read_write(capsys):
+    from protondisk.cli import _cmd_mount
+    from protondisk.core.models import AuthStatus
+
+    class D:
+        def auth_status(self): return AuthStatus(True, "u@pm.me")
+    class M:
+        def mount(self, disk, mountpoint, *, ttl=5.0, foreground=True): pass
+        def unmount(self, mp): return True
+    _cmd_mount(D(), "/tmp/mp", mounter=M())
+    assert "read-write" in capsys.readouterr().out.lower()
+
+
 def test_unmount_success_and_failure():
     ok = FakeMounter(unmount_ok=True)
     assert _cmd_unmount("/tmp/mp", mounter=ok) == 0 and ok.unmounted == "/tmp/mp"

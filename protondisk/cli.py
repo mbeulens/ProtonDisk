@@ -32,7 +32,7 @@ def _cmd_mount(disk, mountpoint, *, mounter=None) -> int:
         print("error: not signed in — run 'protondisk auth-status' / 'auth login'",
               file=sys.stderr)
         return 1
-    print(f"Mounted /my-files at {mountpoint} — press Ctrl-C to unmount")
+    print(f"Mounted /my-files (read-write) at {mountpoint} — press Ctrl-C to unmount")
     mounter.mount(disk, mountpoint)
     return 0
 
