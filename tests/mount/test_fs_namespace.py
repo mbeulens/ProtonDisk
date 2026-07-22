@@ -77,3 +77,14 @@ def test_rename_onto_itself_is_noop_not_eexist():
     disk = FakeDisk(); fs = ProtonDiskFS(disk)
     assert fs.rename("/a.txt", "/a.txt") == 0        # self-rename: no-op
     assert all(c[0] not in ("rename", "move") for c in disk.calls)
+
+
+def test_cross_parent_move_blocked_when_source_name_exists_in_target():
+    disk = FakeDisk()
+    # Dir already contains an "a.txt"
+    disk._tree["/my-files/Dir"] = [Entry("a.txt", "/my-files/Dir/a.txt", False, 1, 1.0, "x")]
+    fs = ProtonDiskFS(disk)
+    with pytest.raises(FuseOSError) as ei:
+        fs.rename("/a.txt", "/Dir/renamed.txt")   # move lands a.txt in Dir first -> collision
+    assert ei.value.errno == errno.EEXIST
+    assert all(c[0] not in ("move", "rename") for c in disk.calls)

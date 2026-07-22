@@ -86,8 +86,9 @@ class ProtonDiskFS(Operations):
                 "f_bavail": 0, "f_files": 0, "f_ffree": 0, "f_namemax": 255}
 
     # ---- handle registry ----
-    def _register(self, tmpdir, fobj, path, writable) -> int:
+    def _register(self, tmpdir, fobj, path, writable, dirty=False) -> int:
         h = _Handle(tmpdir, fobj, path, writable)
+        h.dirty = dirty
         fh = self._next_fh
         self._next_fh += 1
         self._open_files[fh] = h
@@ -127,17 +128,25 @@ class ProtonDiskFS(Operations):
             if entry is not None and not (flags & os.O_TRUNC):
                 self._disk.download(proton_path(path), tmpdir)  # keep existing bytes
                 fobj = open(local, "r+b")
+                # opened for edit; only re-upload if something is actually written
+                start_dirty = False
             else:
                 fobj = open(local, "w+b")
+                # a brand-new file, or O_TRUNC emptying an existing one: the empty
+                # (or about-to-be-rewritten) buffer IS the intended new content, so
+                # it must be uploaded even if the app never calls write().
+                start_dirty = True
         except (ProtonDiskError, OSError):
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise FuseOSError(errno.EIO)
-        return self._register(tmpdir, fobj, path, writable=True)
+        return self._register(tmpdir, fobj, path, writable=True, dirty=start_dirty)
 
     def create(self, path, mode, fi=None):
         tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
         fobj = open(os.path.join(tmpdir, os.path.basename(path)), "w+b")
-        return self._register(tmpdir, fobj, path, writable=True)
+        # a freshly created file must be persisted even if nothing is written to it
+        # (touch, cp of an empty file, saving a 0-byte document).
+        return self._register(tmpdir, fobj, path, writable=True, dirty=True)
 
     def read(self, path, size, offset, fh):
         h = self._open_files[fh]
@@ -257,8 +266,13 @@ class ProtonDiskFS(Operations):
         new_parent = os.path.dirname(new) or "/"
         old_name = os.path.basename(old)
         new_name = os.path.basename(new)
-        if new_name in self._entry_names(new_parent):
+        target_names = self._entry_names(new_parent)
+        if new_name in target_names:
             raise FuseOSError(errno.EEXIST)  # Proton won't overwrite
+        # a cross-parent move lands old_name in the target dir first; block that
+        # collision too, before mutating anything.
+        if old_parent != new_parent and old_name != new_name and old_name in target_names:
+            raise FuseOSError(errno.EEXIST)
         try:
             if old_parent == new_parent:
                 self._disk.rename(proton_path(old), new_name)

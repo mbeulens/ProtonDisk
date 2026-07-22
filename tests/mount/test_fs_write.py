@@ -119,3 +119,49 @@ def test_standalone_truncate_downloads_truncates_uploads():
     assert fs.truncate("/e.txt", 3) == 0          # no fh -> standalone path
     assert disk.uploads[0][0] == b"123"           # uploaded the truncated content
     assert disk.uploads[0][2] == "replace"
+
+
+def test_create_without_write_still_uploads_empty_file():
+    # touch / cp empty file / save 0-byte doc must persist, not silently vanish.
+    disk = FakeDisk()
+    fs = ProtonDiskFS(disk, notifier=FakeNotifier())
+    fh = fs.create("/empty.txt", 0o644)
+    fs.release("/empty.txt", fh)             # no write() at all
+    assert len(disk.uploads) == 1
+    data, parent, conflict, name = disk.uploads[0]
+    assert data == b"" and name == "empty.txt" and conflict == "replace"
+
+
+def test_open_trunc_without_write_persists_empty():
+    # opening an existing file with O_TRUNC and closing without writing empties it.
+    import os as _os
+    class ExistingDisk(FakeDisk):
+        def __init__(self):
+            super().__init__()
+            self._tree["/my-files"] = [Entry("e.txt", "/my-files/e.txt", False, 8, 1.0, "e")]
+        def download(self, remote, folder, progress=None):
+            with open(_os.path.join(folder, _os.path.basename(remote)), "wb") as f:
+                f.write(b"12345678")
+    disk = ExistingDisk()
+    fs = ProtonDiskFS(disk, notifier=FakeNotifier())
+    fh = fs.open("/e.txt", os.O_WRONLY | os.O_TRUNC)
+    fs.release("/e.txt", fh)                  # truncated to empty, no write
+    assert disk.uploads and disk.uploads[0][0] == b""   # empty content uploaded
+
+
+def test_edit_open_without_write_does_not_reupload():
+    # opening an existing file for edit (no O_TRUNC) and closing without changes
+    # must NOT re-upload (dirty stays False).
+    import os as _os
+    class ExistingDisk(FakeDisk):
+        def __init__(self):
+            super().__init__()
+            self._tree["/my-files"] = [Entry("k.txt", "/my-files/k.txt", False, 3, 1.0, "k")]
+        def download(self, remote, folder, progress=None):
+            with open(_os.path.join(folder, _os.path.basename(remote)), "wb") as f:
+                f.write(b"abc")
+    disk = ExistingDisk()
+    fs = ProtonDiskFS(disk, notifier=FakeNotifier())
+    fh = fs.open("/k.txt", os.O_RDWR)          # edit, no trunc
+    fs.release("/k.txt", fh)
+    assert disk.uploads == []                   # unchanged -> no re-upload
