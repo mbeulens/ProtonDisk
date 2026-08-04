@@ -27,9 +27,11 @@ class FakeDisk:
 
 class FakeNotifier:
     def __init__(self): self.events = []
-    def begin(self, body=""): self.events.append(("begin", body)); return {"h": 1}
+    def begin(self, body="", quiet=False):
+        self.events.append(("begin", body)); return {"h": 1}
     def update(self, h, body): self.events.append(("update", body))
     def finish(self, h, body, timeout_ms=3000): self.events.append(("finish", body))
+    def fail(self, h, body, timeout_ms=5000): self.events.append(("fail", body))
 
 
 def _fs():

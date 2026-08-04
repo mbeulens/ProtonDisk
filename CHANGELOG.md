@@ -7,6 +7,35 @@ patch-per-commit scheme (the `VERSION` file is the single source of truth).
 > Note: version numbers with a `13` segment (e.g. `0.1.13`) are deliberately
 > skipped — "To be sure to be sure!"
 
+## [2.1.0] — 2026-08-04
+
+**Browsing the mount stays quiet and offline.** Opening a folder in a file manager no
+longer downloads its contents just to draw thumbnails.
+
+### Fixed
+- **File managers no longer download a folder just to preview it.** Opening the mount in
+  Nautilus set off the desktop's thumbnailers and search indexers, each of which pulled a
+  whole file over the network and raised its own notification — a single folder view meant
+  a burst of transfers and a pile of popups. Preview and indexing helpers (thumbnailers,
+  tumbler, tracker/localsearch, baloo, the office thumbnailer) are now recognised from the
+  FUSE caller's pid and refused with `EACCES` **before any network call**, so the file
+  manager falls back to a generic icon and nothing is fetched. GNOME sandboxes these under
+  `bwrap`, so a few near ancestors of the calling process are checked too.
+- **Notifications no longer stack.** All mount activity shares a single bubble that is
+  updated in place, and background reads stay silent unless they run past ~2s. Saves and
+  failures stay visible as before.
+
+### Unchanged
+- Reads from the file manager itself and from real applications are untouched — opening,
+  copying and editing files behave exactly as before.
+- No changes to the CLI, the GUI, or the on-disk format.
+
+### Notes
+- Test suite grew from 166 to **188 tests**.
+- GNOME/GIO always classifies a non-`sshfs` FUSE mount as **local** (`filesystem::remote`
+  is `FALSE`) regardless of `subtype=`, and this is not configurable via mount options or
+  gsettings — which is why the fix lives inside the FUSE layer rather than in mount flags.
+
 ## [2.0.0] — 2026-07-22
 
 **Editors just work on the mount.** This release makes real text editors and file

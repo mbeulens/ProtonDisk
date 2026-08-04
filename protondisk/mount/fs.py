@@ -8,10 +8,11 @@ import stat as stat_mod
 import tempfile
 import time
 
-from fuse import FuseOSError, Operations
+from fuse import FuseOSError, Operations, fuse_get_context
 
 from protondisk.core.errors import ProtonDiskError
 from .cache import ListingCache
+from .callers import is_preview_process
 from .ignore import is_ephemeral
 from .notify import Notifier
 from .translate import proton_path, is_write_flags, stat_dict, root_stat_dict
@@ -42,10 +43,14 @@ class _Handle:
 
 
 class ProtonDiskFS(Operations):
-    def __init__(self, disk, ttl: float = 5.0, notifier=None) -> None:
+    def __init__(self, disk, ttl: float = 5.0, notifier=None,
+                 block_previews: bool = True) -> None:
         self._disk = disk
         self._cache = ListingCache(ttl=ttl)
         self._notifier = notifier or Notifier(enabled=False)
+        # Thumbnailers and search indexers would download every file in a folder
+        # the moment a file manager shows it — refuse their reads (see callers.py).
+        self._block_previews = block_previews
         self._open_files: dict[int, _Handle] = {}
         self._write_handles: dict[str, _Handle] = {}
         self._next_fh = 1
@@ -86,6 +91,16 @@ class ProtonDiskFS(Operations):
             return [n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n))]
         except OSError:
             return []
+
+    # ---- preview/indexing helpers (never worth a download) ----
+    def _caller_is_preview(self) -> bool:
+        if not self._block_previews:
+            return False
+        try:
+            pid = fuse_get_context()[2]
+        except Exception:
+            return False        # no caller context (tests, odd platforms): allow
+        return is_preview_process(pid)
 
     # ---- tombstones (mask a just-deleted name during eventual consistency) ----
     def _tombstone(self, path: str) -> None:
@@ -193,6 +208,10 @@ class ProtonDiskFS(Operations):
         if self._is_ephemeral(path):
             return self._eph_open(path, flags)
         writable = is_write_flags(flags)
+        if not writable and self._caller_is_preview():
+            # A thumbnailer/indexer: refuse before touching the network, so showing
+            # a folder never downloads its contents.
+            raise FuseOSError(errno.EACCES)
         entry = self._find_entry(path)
         name = os.path.basename(path)
         if not writable:
@@ -201,14 +220,16 @@ class ProtonDiskFS(Operations):
             if entry.is_dir:
                 raise FuseOSError(errno.EISDIR)
             tmpdir = tempfile.mkdtemp(prefix="protondisk-mnt-")
-            note = self._notifier.begin(f"Opening {name}…")
+            # quiet: a read is often the desktop peeking at a file (content-type
+            # sniffing); only a download slow enough to be felt earns a popup.
+            note = self._notifier.begin(f"Opening {name}…", quiet=True)
             try:
                 self._disk.download(
                     proton_path(path), tmpdir,
                     progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
                 fobj = open(os.path.join(tmpdir, name), "rb")
             except (ProtonDiskError, OSError):
-                self._notifier.finish(note, f"Failed: {name}")
+                self._notifier.fail(note, f"Failed: {name}")
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 raise FuseOSError(errno.EIO)
             self._notifier.finish(note, f"Ready: {name}")
@@ -308,7 +329,7 @@ class ProtonDiskFS(Operations):
                 h.local(), parent, conflict="replace",
                 progress=lambda ph: self._notifier.update(note, f"{ph} {name}"))
         except (ProtonDiskError, OSError):
-            self._notifier.finish(note, f"Upload failed: {name}")
+            self._notifier.fail(note, f"Upload failed: {name}")
             raise FuseOSError(errno.EIO)
         self._notifier.finish(note, f"Saved {name} to Proton Drive")
         h.dirty = False
@@ -450,7 +471,7 @@ class ProtonDiskFS(Operations):
                     conflict="replace",
                     progress=lambda ph: self._notifier.update(note, f"{ph} {new_name}"))
             except (ProtonDiskError, OSError):
-                self._notifier.finish(note, f"Save failed: {new_name}")
+                self._notifier.fail(note, f"Save failed: {new_name}")
                 raise FuseOSError(errno.EIO)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
